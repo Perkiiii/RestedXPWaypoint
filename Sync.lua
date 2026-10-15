@@ -111,6 +111,8 @@ local state = {
     lastTransition = nil,    -- { text, time }
     lastFailure = nil,       -- { text, time }
     lastVerification = nil,  -- { questID, ok, detail, time } of the last native check
+    contextQuest = nil,      -- quest ID of the current quest context (diagnostics/logging)
+    lastContextLabelLog = nil,
     lastDecision = nil,
     lastDecisionLog = nil,   -- avoids repeating the same decision message
     lastInvalidReason = nil, -- avoids repeating the same skip message
@@ -197,8 +199,66 @@ end
 function Sync.GetDecisionContext()
     return {
         currentQuest = state.handledMode == "native" and state.handledQuest or nil,
+        currentKind = state.handledMode == "native" and state.handledKind or nil,
+        pending = state.pendingNative ~= nil,
         blockedReason = NativeBlocked,
     }
+end
+
+--------------------------------------------------------------------------------
+-- Quest context and coordinate presentation (v0.5.4, native-first only)
+--------------------------------------------------------------------------------
+
+local function ReadyText()
+    local text = _G.QUEST_WATCH_QUEST_READY
+    if type(text) == "string" and text ~= "" then return text end
+    return "Ready for turn-in"
+end
+
+-- Logs quest context changes (never per poll): new context, or cleared.
+local function NoteContext(decision)
+    local c = decision and decision.context
+    local questID = c and c.questID or nil
+    if questID == state.contextQuest then return end
+    if state.contextQuest then
+        local stillInLog = Nav.GetQuestState(state.contextQuest).inLog
+        ns.Debug("Quest context cleared: quest %d (%s).", state.contextQuest,
+            stillInLog and "RestedXP moved to a different activity" or "quest turned in or removed")
+    end
+    if c then
+        ns.Debug("Using quest context: %s (quest %d, %s, from %s).", c.title, c.questID,
+            c.kind == "turnin" and (c.ready and "ready for turn-in" or "turn-in") or "objective", tostring(c.source))
+    end
+    state.contextQuest = questID
+end
+
+-- A coordinate waypoint whose RestedXP label is only the "Step N" fallback
+-- shows the structurally associated quest instead: its title, plus
+-- "Ready for turn-in" when the quest log says so, and Waypoint UI's quest icon
+-- (WUI.GetQuestIcon). Real RestedXP instructions ("Enter the cave", "Talk to
+-- X", ...) are never replaced. No progress counts: the label is a snapshot.
+local function PrepareCoordinateTarget(target, decision)
+    if ns.db.strategy ~= "native-first" then return end
+    local c = decision and decision.context
+    if not c or not (target.labelInfo and target.labelInfo.fallback) then return end
+
+    local label = c.title
+    if c.kind == "turnin" and c.ready then label = format("%s - %s", c.title, ReadyText()) end
+    label = ns.Label.Clean(label) or c.title
+    target.label = label
+    target.labelInfo = {
+        label = label, source = "quest context (" .. tostring(c.source) .. ")",
+        cleaned = false, shortened = false, fallback = false, contextQuest = c.questID,
+    }
+    target.stripCoordinates = true
+    target.iconTexture = WUI.GetQuestIcon(c.kind == "turnin" and c.ready)
+
+    local logKey = format("%s|%s", label, tostring(target.iconTexture))
+    if logKey ~= state.lastContextLabelLog then
+        state.lastContextLabelLog = logKey
+        ns.Debug("Coordinate waypoint label: %s (quest context, icon: %s).", label,
+            target.iconTexture and "quest" or "default")
+    end
 end
 
 local function NoteStep(target)
@@ -236,7 +296,9 @@ local function LogDecision(target, decision)
                 c.selected and " [selected]" or "")
         end
     end
-    if decision.mode == "native" then
+    if decision.mode == "native" and decision.continuity and decision.continuity.ok then
+        ns.Debug("Preserving native quest %d: %s", decision.questID, decision.reason)
+    elseif decision.mode == "native" then
         ns.Debug("%s: selecting quest %d - %s", ns.db.strategy, decision.questID, decision.reason)
     else
         ns.Debug("Coordinate fallback: %s", decision.reason or "?")
@@ -348,6 +410,7 @@ local function FailNative(target, questID, id, why, announce, progress)
     if announce then
         ns.Print("Native quest navigation unavailable (%s); using RestedXP coordinates.", why)
     end
+    PrepareCoordinateTarget(current, nextDecision)
     local ok, err = ToCoordinates(current, "native fallback", true)
     if not ok then
         NoteFailure(format("native quest %d: %s; coordinate fallback failed: %s", questID, why, err))
@@ -533,14 +596,20 @@ local function Evaluate(trigger)
     local decision = Nav.Decide(target, ns.db.strategy, Sync.GetDecisionContext())
     state.lastDecision = decision
     LogDecision(target, decision)
+    NoteContext(decision)
+    if decision.mode ~= "native" then PrepareCoordinateTarget(target, decision) end
 
     -- Hold mode changes at an unchanged destination while the player follows
     -- a waypoint the bridge did not create (it resumes on a new destination).
     -- A native -> native switch (e.g. the next quest in a farming circuit) is
     -- not a new RestedXP destination, so it is held too, whatever point the
     -- patrol arrow is on.
+    -- Likewise a coordinate helper waypoint for the quest the bridge is already
+    -- tracking natively (same quest context) is the same activity (v0.5.4).
     if state.handledMode and (target.key == state.handledKey
-        or (state.handledMode == "native" and decision.mode == "native")) then
+        or (state.handledMode == "native" and decision.mode == "native")
+        or (state.handledMode == "native" and decision.context ~= nil
+            and decision.context.questID == state.handledQuest)) then
         local wantId = decision.mode == "native" and decision.nativeId or nil
         local modeChange = decision.mode ~= state.handledMode
             or (decision.mode == "native" and wantId ~= state.handledId)
@@ -693,6 +762,7 @@ function Sync.SyncNow()
         return true
     end
 
+    PrepareCoordinateTarget(target, decision)
     local ok, err = ToCoordinates(target, "manual", false)
     if not ok then
         ns.Print("Sync failed: %s.", err)

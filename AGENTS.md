@@ -112,6 +112,12 @@ The developer tests every change by hand in game with `/reload`. There is no bui
 - Waypoint UI's quest presentation depends on native quest supertracking (`C_SuperTrack.GetSuperTrackedQuestID`). The public API cannot attach quest context to a custom coordinate.
 - For custom navigation, `Waypoint_DataProvider.CacheSuperTrackingInfo` displays `info.name`, plus a coordinate line unless `info.stripCoordinates` is set.
 - **Re-calling `NewUserNavigation` with identical coordinates only renames the navigation.** It skips `C_Map.SetUserWaypoint` when `IsCurrentWaypoint` matches, but still fires `MapPin.NewUserNavigation`, which refreshes the display. With pathfinding enabled, it also re-runs the path request.
+- **Custom waypoint presentation (public API):**
+  - `name` is the only text line. The second line is the coordinates, or nothing with `stripCoordinates`. There is **no subtitle and no quest-context field**.
+  - `iconTexture`, `iconType` (`TEXTURE`/`ATLAS`) and `requestRecolor` become the marker's context icon for a tracked custom navigation (`Waypoint_DataProvider.GetContextIconForPinData`).
+  - Native quest icons are Waypoint UI's own files in `Art\Icons`, e.g. `CompleteQuest` and `IncompleteQuest` (`Waypoint_ContextIcon.lua`). Those names are an implementation detail.
+  - "Ready for turn-in" is Waypoint UI's private locale string.
+  - A same-coordinate `NewUserNavigation` updates the name and icon without moving the native waypoint.
 - Waypoint UI does not compute quest POI locations itself. Quest-POI location APIs (`C_QuestLog.GetNextWaypoint`, etc.) are unverified in Forever. Native targets are therefore checked with `C_Navigation.GetDistance()` only.
 - **Clearing a tracked user waypoint triggers `ClearAllSuperTracked()`.** Waypoint UI's `USER_WAYPOINT_UPDATED` handler calls `C_SuperTrack.ClearAllSuperTracked()` when the user waypoint disappears while supertracked. Any quest supertracking must therefore be set *after* clearing the bridge's waypoint, with a delay. `ClearUserNavigation(false, true)` also removes the native waypoint and suppresses the multi-pin advance.
 
@@ -127,7 +133,7 @@ The load order is set in the `.toc`. All modules share the addon namespace `ns`.
 | `NavigationResolver.lua` | `ns.Nav` | Structure-only analysis, testable offline: `FindTurnIn(element)` (hybrid, unchanged since v0.4) and `FindQuestTarget(element)` (native-first: turn-ins and `.complete` objectives). `GetQuestState(questID, withObjectives)`. `Decide(target, strategy)` returns `{ mode, reason, nativeEligible, kind, classification, questID, questName, questState, objectives, progress, pendingTurnIns, nativeId, tolerance, analysis }`. Native wrappers: `SetNativeQuest()`, `ReleaseNativeQuest()` (only if still supertracked), `IsNativeQuestActive()`, `VerifyNative()`. Reads RestedXP step data and calls `C_SuperTrack`, `C_QuestLog` and `C_Navigation`. |
 | `WaypointAdapter.lua` | `ns.WUI` | **Only** place that calls Waypoint UI. `SetNavigation()` (passes `stripCoordinates`), `GetNavigation()`, `IsShowingTarget()` (coordinates), `HasTargetLabel()`, `IsOwnedNavigationTracked()`, `ClearOwnedNavigation()` (bridge-owned only), `GetForeignNavigationName()`, `DescribeOutsideNavigation(expectedQuestID)`. |
 | `Sync.lua` | `ns.Sync` | The single controller. `Initialize()`, `Start()`/`Stop()`, `SyncNow()`, `OnStrategyChanged()`, `GetState()`. |
-| `tests/` | — | `node tests/run.js` runs `*_test.lua` in fengari against mocked APIs (`npm install --prefix tests` once). The files are `label_test.lua`, `hybrid_test.lua` (the v0.4 regression suite, self-contained; keep it passing unchanged), `native_first_test.lua`, `agitators_test.lua` (the Skyborne patrol-step fixtures) and `vuldren_test.lua` (quest prioritization in a shared circuit). The last three use the shared mocks in `harness.lua`, including `RXPFrame.activeSteps` via `H.setActiveSteps`; `H.verbose` prints debug output on failures. WoW ignores this folder because it isn't in the `.toc`. **Update or extend these tests whenever you change resolver or sync behaviour.** |
+| `tests/` | — | `node tests/run.js` runs `*_test.lua` in fengari against mocked APIs (`npm install --prefix tests` once). The files are `label_test.lua`, `hybrid_test.lua` (the v0.4 regression suite, self-contained; keep it passing unchanged), `native_first_test.lua`, `agitators_test.lua` (the Skyborne patrol-step fixtures), `vuldren_test.lua` (quest prioritization in a shared circuit) and `windstones_test.lua` (helper continuity and quest context). The last four use the shared mocks in `harness.lua`, including `RXPFrame.activeSteps` via `H.setActiveSteps`; `H.verbose` prints debug output on failures. WoW ignores this folder because it isn't in the `.toc`. **Update or extend these tests whenever you change resolver or sync behaviour.** |
 
 ### Sync rules (keep these invariants)
 
@@ -200,11 +206,27 @@ The load order is set in the `.toc`. All modules share the addon namespace `ns`.
   - `SelectQuest` checks every quest with `CheckObjective` and skips blocked ones. It then ranks: (1) a text-only line starting with "Prioritize" in a step whose pending quests are exactly that quest (English guide text; RestedXP has no priority field and no `#track` in the Forever guides); (2) RestedXP's current step (active, not sticky, no `completewith`); (3) `context.currentQuest` (the bridge), then the WoW-supertracked quest; (4) guide order (lowest step index, then line order).
   - `decision.candidates` lists every quest's state; `decision.selection` says why the winner won.
   - The selected quest's identity is `objective:Q`, so objective completion switches native → native.
+- **Helper waypoints (v0.5.4):**
+  - Own `.goto` text without letters (`>>1`) is a placeholder, not a travel instruction.
+  - A sticky non-loop step with exactly one pending waypoint and no instructions is a **helper**. Its anchor is found by `FindAnchorStep`: the active step matching `completewith` by `label`, or index+1 for `next`.
+  - `FindQuestTarget` returns `nil, reason, { role = "helper", helper = { step, anchor, candidate } }`. The candidate is `AnalyzeBlock` over the anchor's elements. A helper is never a native candidate by itself.
+  - `FindQuestTarget` now returns `(candidate, reason, info)`, where `info.role` is one of: travel instruction, route point, turn-in destination, objective area, loop circuit, patrol, helper, other. `info.routeCritical` is true for travel instruction and route point.
+- **Native continuity (`DecideHelper`), turn-ins only.** All of these must hold:
+  - the anchor candidate is a turn-in of `context.currentQuest`, and `context.currentKind == "turnin"`
+  - no transition is pending (`context.pending`)
+  - the quest is in the log and ready
+  - `Nav.IsNativeQuestActive`
+  - `VerifyNative` against the helper point passes, with `TURNIN_TOLERANCE`
+  - Then the decision is native with the same `turnin:Q` id, so Sync writes nothing. Objectives never use continuity, because their areas can have several clusters (the Skyborne druid helper).
+- **Quest context (`decision.context`):** built only from a structural association, plus a quest that is in the log right now. Never cache it across evaluations.
+  - `PrepareCoordinateTarget` (Sync, native-first only) replaces **only** fallback labels (`labelInfo.fallback`). It uses the quest title, plus "Ready for turn-in" (`QUEST_WATCH_QUEST_READY`, else English) when the log says ready, and `WUI.GetQuestIcon(ready)`, which only returns an icon for Waypoint UI 1.7.x.
+  - `HasTargetLabel` compares the icon too, so icon changes go through the silent same-coordinate rename.
+- **Manual hold (v0.5.4):** besides the same key and native → native, a coordinate decision whose `context.questID` equals the bridge's native quest is the same activity, so it is held while a foreign navigation is tracked.
 - Never classify by quest names, and never pick between quests outside a `#loop` circuit.
 - **Manual waypoints:** while a non-bridge Waypoint UI navigation is tracked, mode changes at the same destination key are held. A new destination key resumes, as in v0.2.
 - **RestedXP supertracking:** RestedXP supertracking the bridge's own native quest is not an outside change (`DescribeOutsideNavigation(expectedQuestID)`). Other quests RestedXP supertracks are recorded as outside changes and never fought.
 
-## Current state (0.5.3)
+## Current state (0.5.4)
 
 - v0.2 coordinate mirroring and v0.4 hybrid turn-ins have passed in-game tests; the developer was happy with hybrid. Commit `5dd7752` is the v0.4 checkpoint.
 - v0.5 adds the experimental `native-first` strategy. It needs in-game acceptance, and its verification limits may need tuning from the debug values.
@@ -212,6 +234,7 @@ The load order is set in the `.toc`. All modules share the addon namespace `ns`.
 - The label cleaner requires a letter, so `+1` is never a label.
 - v0.5.2 checks a patrol's native target against the whole circuit, which fixed the in-game false rejection on Agitators.
 - v0.5.3 picks a quest when several share a farming circuit, and retries failed native targets on a policy instead of blocking them until zoning.
+- v0.5.4 adds helper-waypoint detection, native continuity for turn-ins, and quest-context labels and icons on fallback coordinate labels.
 - `coordinates` and `hybrid` behaviour is unchanged.
 - Offline tests (`node tests/run.js`) cover labels, hybrid (as regression), and native-first: kill, collect and interact classification, loops, route chains, parent-linked blocks, ambiguity, coverage, verification and tolerance, objective → turn-in, progress events, manual overrides, stale callbacks and strategy switching. The mocks assume WoW supertracks one target at a time; that is unverified in Forever.
 

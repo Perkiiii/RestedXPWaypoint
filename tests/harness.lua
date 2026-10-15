@@ -34,7 +34,8 @@ function H.fire(event, ...) for _, f in ipairs(frames) do if f.events[event] and
 H.chat = {}
 DEFAULT_CHAT_FRAME = { AddMessage = function(_, m) table.insert(H.chat, m) end }
 SlashCmdList = {}
-C_AddOns = { IsAddOnLoaded = function() return true end, GetAddOnMetadata = function(a) return a == "RXPWaypointBridge" and "0.5.3" or "x" end }
+H.versions = { RXPWaypointBridge = "0.5.4", WaypointUI = "1.7.3" }
+C_AddOns = { IsAddOnLoaded = function() return true end, GetAddOnMetadata = function(a) return H.versions[a] or "x" end }
 C_Map = { GetMapInfo = function(id) return { name = "Map" .. id } end, CanSetUserWaypointOnMap = function() return true end }
 
 local st = { quest = nil, user = false, setQuestCalls = 0 }
@@ -72,7 +73,8 @@ H.wui = wui
 WaypointUIAPI = { Navigation = {
   NewUserNavigation = function(o)
     wui.writes = wui.writes + 1
-    wui.nav = { name = o.name, mapID = o.mapID, x = o.x / 100, y = o.y / 100, flags = o.flags, stripCoordinates = o.stripCoordinates }
+    wui.nav = { name = o.name, mapID = o.mapID, x = o.x / 100, y = o.y / 100, flags = o.flags, stripCoordinates = o.stripCoordinates,
+      iconTexture = o.iconTexture, iconType = o.iconType }
     C_SuperTrack.SetSuperTrackedUserWaypoint(true); return wui.nav end,
   GetUserNavigation = function() return wui.nav end,
   IsUserNavigationTracked = function() return wui.nav ~= nil and st.user end,

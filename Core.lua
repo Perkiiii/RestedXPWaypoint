@@ -149,6 +149,24 @@ local function DescribeMode(mode, questID, kind)
     return mode or "none"
 end
 
+-- Waypoint role, quest context and continuity lines (native-first analysis).
+local function PrintContext(decision)
+    if decision.role then
+        ns.PrintLine("Waypoint role: %s | route-critical: %s", decision.role, YesNo(decision.routeCritical))
+    end
+    local c = decision.context
+    if c then
+        ns.PrintLine("Quest context: %d %s (%s) from %s", c.questID, c.title,
+            c.kind == "turnin" and (c.ready and "turn-in, ready" or "turn-in") or "objective", tostring(c.source))
+    else
+        ns.PrintLine("Quest context: none")
+    end
+    if decision.continuity then
+        ns.PrintLine("Native continuity: %s - %s", decision.continuity.ok and "preserved" or "not used",
+            tostring(decision.continuity.detail))
+    end
+end
+
 -- Candidate lines for a shared-circuit (multi-quest) decision.
 local function PrintCandidates(decision)
     if not decision.candidates then return end
@@ -214,6 +232,7 @@ function ns.PrintStatus()
         ns.PrintLine("Native eligible (%s analysis): %s", decision.analysis or "?", YesNo(decision.nativeEligible))
         ns.PrintLine("Decision (%s): %s - %s", ns.db.strategy,
             DescribeMode(decision.mode, decision.questID, decision.kind), tostring(decision.reason))
+        PrintContext(decision)
     end
 
     local nav = ns.WUI.GetNavigation()
@@ -222,7 +241,7 @@ function ns.PrintStatus()
         local y = ns.IsFiniteNumber(nav.y) and nav.y * 100 or nil
         ns.PrintLine("Waypoint UI destination: %s, map %s @ %s, %s (%s)",
             tostring(nav.name or "?"), tostring(nav.mapID), ns.FormatCoord(x), ns.FormatCoord(y),
-            nav.flags == ns.OWNER_FLAG and "set by bridge" or "not set by bridge")
+            nav.flags == ns.OWNER_FLAG and ("set by bridge" .. (nav.iconTexture and ", quest icon" or "")) or "not set by bridge")
     else
         ns.PrintLine("Waypoint UI destination: none")
     end
@@ -322,6 +341,7 @@ function ns.PrintInspect()
     local decision = ns.Nav.Decide(target, "native-first", ns.Sync.GetDecisionContext())
     PrintCandidates(decision)
     ns.PrintLine("Native-first analysis: %s - %s", YesNo(decision.nativeEligible), tostring(decision.reason))
+    PrintContext(decision)
     if decision.questID then
         ns.PrintLine("Candidate: quest %d (%s), %s%s", decision.questID, tostring(decision.questName or "?"),
             tostring(decision.classification or decision.kind or "?"),

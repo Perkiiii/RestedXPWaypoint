@@ -356,22 +356,73 @@ local function CircuitPoints(step)
     return points
 end
 
--- v0.5 native-first analysis. Returns candidate, reason.
--- candidate = { kind = "turnin"|"objective", questID, title?, objectives?, pendingTurnIns?, via, references? }.
-function Nav.FindQuestTarget(element)
-    if type(element) ~= "table" then return nil, "no RestedXP waypoint" end
-    if element.tag ~= "goto" or element.generated then
-        return nil, "not a guide .goto waypoint"
+-- The step a sticky helper step completes with (#completewith next / label),
+-- if it is one of RestedXP's active steps.
+local function FindAnchorStep(step)
+    local active = GetActiveSteps()
+    if not active then return nil end
+    local completewith = step.completewith
+    for _, s in ipairs(active) do
+        if type(s) == "table" and s ~= step and s.active and type(s.elements) == "table" then
+            if completewith == "next" then
+                if type(step.index) == "number" and s.index == step.index + 1 then return s end
+            elseif type(completewith) == "string" and s.label == completewith then
+                return s
+            end
+        end
     end
-    if type(element.text) == "string" and element.text:find("%S") then
-        return nil, "explicit travel instruction on this waypoint"
+    return nil
+end
+
+local function PendingWaypointCount(step)
+    local count = 0
+    for _, e in ipairs(step.elements) do
+        if type(e) == "table" and IsWaypointElement(e) and not IsDone(e) then count = count + 1 end
+    end
+    return count
+end
+
+local ROUTE_CRITICAL = { ["travel instruction"] = true, ["route point"] = true }
+
+-- v0.5 native-first analysis. Returns candidate, reason, info.
+-- candidate = { kind = "turnin"|"objective"|"multi", questID, title?, objectives?, pendingTurnIns?, via, references? }.
+-- info = { role, routeCritical, helper? } describes the waypoint for
+-- diagnostics and continuity. Roles: "travel instruction", "route point",
+-- "turn-in destination", "objective area", "loop circuit", "patrol",
+-- "helper", "other". helper = { step, anchor, candidate } (v0.5.4): a hidden
+-- navigation-only step (one waypoint, no instructions, at most placeholder
+-- text such as ">>1") that completes with an active anchor step; candidate
+-- is the anchor's own quest instruction, used for quest context and, for
+-- turn-ins only, native continuity (see Nav.Decide).
+function Nav.FindQuestTarget(element)
+    local function result(candidate, reason, role, extra)
+        local info = extra or {}
+        info.role = role
+        info.routeCritical = ROUTE_CRITICAL[role] or false
+        return candidate, reason, info
+    end
+    local function candidateRole(candidate, default)
+        if not candidate then return default end
+        if candidate.kind == "turnin" then return "turn-in destination" end
+        return default == "other" and "objective area" or default
+    end
+
+    if type(element) ~= "table" then return result(nil, "no RestedXP waypoint", "other") end
+    if element.tag ~= "goto" or element.generated then
+        return result(nil, "not a guide .goto waypoint", "other")
+    end
+    -- Own text with letters is an explicit instruction ("Enter the crypt", or
+    -- RestedXP's generated "Go to x,y"). Text without letters (">>1") is a
+    -- placeholder authors use to suppress the generated text; not an instruction.
+    if type(element.text) == "string" and element.text:find("[%a\128-\255]") then
+        return result(nil, "explicit travel instruction on this waypoint", "travel instruction")
     end
 
     local step = element.step
     local elements = type(step) == "table" and step.elements
-    if type(elements) ~= "table" then return nil, "waypoint has no step instructions" end
+    if type(elements) ~= "table" then return result(nil, "waypoint has no step instructions", "other") end
     local index = FindIndex(elements, element)
-    if not index then return nil, "waypoint not found in its step" end
+    if not index then return result(nil, "waypoint not found in its step", "other") end
 
     if type(element.parent) == "table" then
         -- The block above the waypoint, back to the previous waypoint.
@@ -382,7 +433,7 @@ function Nav.FindQuestTarget(element)
             first = first - 1
         end
         local candidate, reason = AnalyzeBlock(elements, first + 1, index - 1, "linked objective block")
-        return candidate, reason
+        return result(candidate, reason, candidateRole(candidate, "other"))
     end
 
     -- The block after the waypoint. More waypoints first = route chain,
@@ -392,7 +443,7 @@ function Nav.FindQuestTarget(element)
         local e = elements[first]
         if not (type(e) == "table" and IsWaypointElement(e)) then break end
         if not step.loop then
-            return nil, "intermediate route waypoint (more waypoints follow before the objective)"
+            return result(nil, "intermediate route waypoint (more waypoints follow before the objective)", "route point")
         end
         first = first + 1
     end
@@ -406,7 +457,7 @@ function Nav.FindQuestTarget(element)
         step.loop and "loop circuit block" or "following block", step.loop ~= nil)
     if candidate or not summary.onlyPlaceholders then
         if candidate and step.loop ~= nil then candidate.references = CircuitPoints(step) end
-        return candidate, reason
+        return result(candidate, reason, candidateRole(candidate, step.loop ~= nil and "loop circuit" or "other"))
     end
 
     -- Nothing but a placeholder here: only a sticky #loop patrol step may hand
@@ -415,9 +466,28 @@ function Nav.FindQuestTarget(element)
     if IsStickyLoop(step) then
         candidate, reason = AnalyzeServedSteps(step)
         if candidate then candidate.references = CircuitPoints(step) end
-        return candidate, reason
+        return result(candidate, reason, "patrol")
     end
-    return nil, reason .. "; not a sticky #loop patrol step"
+
+    -- A sticky non-loop step with this single waypoint and no instructions is a
+    -- navigation helper (e.g. "#completewith Harvesting Windstones2 / #hidewindow
+    -- / .goto 2521,43.37,23.98,60 >>1"). Its quest context is the anchor step it
+    -- completes with. It never becomes a native candidate by itself.
+    if (step.sticky or step.completewith ~= nil) and PendingWaypointCount(step) == 1 then
+        local anchor = FindAnchorStep(step)
+        if anchor then
+            local anchorCandidate, anchorReason = AnalyzeBlock(anchor.elements, 1, #anchor.elements,
+                format("anchor step %s", tostring(anchor.index)))
+            local helperReason = format("navigation helper step %s (completes with step %s): %s", tostring(step.index),
+                tostring(anchor.index), anchorCandidate
+                    and format("%s of quest %d", anchorCandidate.kind == "turnin" and "turn-in" or "objective", anchorCandidate.questID)
+                    or tostring(anchorReason))
+            return result(nil, helperReason, "helper",
+                { helper = { step = step, anchor = anchor, candidate = anchorCandidate } })
+        end
+        return result(nil, reason .. "; helper step without an active anchor step", "other")
+    end
+    return result(nil, reason .. "; not a sticky #loop patrol step", "other")
 end
 
 --------------------------------------------------------------------------------
@@ -908,6 +978,73 @@ local function SelectQuest(candidate, context)
     return pick(first, format("first in RestedXP's guide order (step %s)", index == math.huge and "?" or tostring(index)))
 end
 
+-- Quest context: what the player is working on, independent of how they are
+-- navigated (v0.5.4). Only built from a structural association and a quest
+-- that is in the log right now, so it can never outlive the quest.
+local function MakeContext(questID, questState, kind, source)
+    if not (questState and questState.inLog and type(questState.title) == "string") then return nil end
+    return { questID = questID, title = questState.title, kind = kind,
+             ready = questState.ready and true or false, source = source }
+end
+
+-- Native continuity through a helper waypoint (v0.5.4). Keeps the bridge's
+-- active native turn-in only when ALL hold:
+--   * the helper's anchor step's first pending instruction is the turn-in of
+--     the quest the bridge is already tracking natively as a turn-in
+--     (turn-ins have one destination, the quest giver; objective areas can
+--     have several clusters, so objectives never use continuity)
+--   * no native transition is in progress, the quest is in the log and ready
+--   * WoW is still supertracking that quest (no player/RestedXP override)
+--   * the native target passes the turn-in distance check against the
+--     helper waypoint (one-sided: rejects a helper that is provably elsewhere)
+-- Otherwise the helper is followed with coordinates.
+local function DecideHelper(decision, target, helper, context)
+    local hc = helper.candidate
+    local q = hc.questID
+    local qs = Nav.GetQuestState(q, hc.kind == "objective")
+    local source = format("helper step %s -> step %s", tostring(helper.step.index), tostring(helper.anchor.index))
+    decision.context = MakeContext(q, qs, hc.kind, source)
+    if hc.kind ~= "turnin" then
+        decision.continuity = { ok = false, detail = "only turn-ins keep native tracking through helper waypoints" }
+        return
+    end
+
+    context = context or {}
+    local why
+    if not (context.currentQuest == q and context.currentKind == "turnin") then
+        why = format("native turn-in of quest %d is not active", q)
+    elseif context.pending then
+        why = "a native transition is in progress"
+    elseif not (qs.inLog and qs.ready) then
+        why = format("quest %d is not ready for turn-in", q)
+    elseif not Nav.IsNativeQuestActive(q) then
+        why = format("quest %d is no longer supertracked", q)
+    end
+    if why then
+        decision.continuity = { ok = false, detail = why }
+        decision.reason = decision.reason .. "; native continuity not applicable: " .. why
+        return
+    end
+
+    local ok, detail, m = Nav.VerifyNative(target, q, Nav.TURNIN_TOLERANCE)
+    decision.continuity = { ok = ok, detail = detail }
+    if not ok then
+        decision.reason = "native continuity rejected: " ..
+            (m and m.gap and "the native target is not consistent with the helper waypoint" or detail)
+        return
+    end
+    decision.kind = "turnin"
+    decision.questID = q
+    decision.questState = qs
+    decision.questName = qs.title
+    decision.classification = "turn-in"
+    decision.tolerance = Nav.TURNIN_TOLERANCE
+    decision.nativeId = format("turnin:%s", tostring(q))
+    decision.nativeEligible = true
+    decision.reason = format("native continuity: helper step %s leads to the same turn-in (quest %d, step %s)",
+        tostring(helper.step.index), q, tostring(helper.anchor.index))
+end
+
 --------------------------------------------------------------------------------
 -- Decision
 --------------------------------------------------------------------------------
@@ -925,21 +1062,29 @@ end
 --   tolerance       verification tolerance for this kind
 --   references      circuit points for verification (#loop / patrol)
 --   analysis        "hybrid" or "native-first" (which resolver produced it)
--- context (optional, from Sync): { currentQuest, blockedReason(nativeId, progress) }
+--   role, routeCritical   (native-first) what the waypoint is, see FindQuestTarget
+--   context         (native-first) quest context for coordinate labels: { questID, title, kind, ready, source }
+--   continuity      (helper waypoints) { ok, detail } of the native continuity check
+-- context (optional, from Sync): { currentQuest, currentKind, pending, blockedReason(nativeId, progress) }
 function Nav.Decide(target, strategy, context)
     local useHybrid = strategy == "hybrid"
     local decision = { mode = "coordinates", nativeEligible = false,
                        analysis = useHybrid and "hybrid" or "native-first" }
 
-    local candidate, why
+    local candidate, why, info
     if useHybrid then
         candidate, why = Nav.FindTurnIn(target.element)
     else
-        candidate, why = Nav.FindQuestTarget(target.element)
+        candidate, why, info = Nav.FindQuestTarget(target.element)
     end
+    decision.role = info and info.role or nil
+    decision.routeCritical = info and info.routeCritical or false
 
     if not candidate then
         decision.reason = why
+        if info and info.helper and info.helper.candidate then
+            DecideHelper(decision, target, info.helper, context)
+        end
     elseif candidate.kind == "multi" then
         decision.kind = "objective"
         decision.tolerance = Nav.OBJECTIVE_TOLERANCE
@@ -1023,6 +1168,11 @@ function Nav.Decide(target, strategy, context)
                 decision.reason = "native target failed verification recently: " .. blocked
             end
         end
+    end
+
+    if not decision.context and decision.questID and not useHybrid then
+        decision.context = MakeContext(decision.questID, decision.questState, decision.kind,
+            decision.role or "quest instruction")
     end
 
     if decision.nativeEligible then

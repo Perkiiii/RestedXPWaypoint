@@ -73,11 +73,31 @@ function WUI.IsShowingTarget(target)
     return abs(nav.x * 100 - target.x) < MATCH_TOLERANCE and abs(nav.y * 100 - target.y) < MATCH_TOLERANCE
 end
 
--- True when the bridge-owned navigation already shows this target's label.
+-- True when the bridge-owned navigation already shows this target's label
+-- (and icon).
 function WUI.HasTargetLabel(target)
     local nav = WUI.GetNavigation()
     return nav ~= nil and nav.flags == ns.OWNER_FLAG and nav.name == target.label
         and (nav.stripCoordinates == true) == (target.stripCoordinates == true)
+        and nav.iconTexture == target.iconTexture
+end
+
+-- Quest icon for a custom waypoint that carries quest context (v0.5.4).
+-- NewUserNavigation's documented iconTexture/iconType options are drawn as the
+-- marker's context icon for a tracked custom navigation
+-- (Waypoint_DataProvider.GetContextIconForPinData). Waypoint UI's own native
+-- quest icons are files it ships in Art\Icons (CompleteQuest /
+-- IncompleteQuest for normal quests, see Waypoint_ContextIcon.lua). Those file
+-- names are an implementation detail, so they are only used with the Waypoint
+-- UI version they were verified against (1.7.x); otherwise no icon is set and
+-- Waypoint UI keeps its default custom-waypoint icon.
+local VERIFIED_ICON_VERSION = "^1%.7%."
+local QUEST_ICON_PATH = "Interface\\AddOns\\WaypointUI\\Art\\Icons\\"
+
+function WUI.GetQuestIcon(ready)
+    local version = ns.GetVersion(WUI_ADDON)
+    if type(version) ~= "string" or not version:find(VERIFIED_ICON_VERSION) then return nil end
+    return QUEST_ICON_PATH .. (ready and "CompleteQuest" or "IncompleteQuest")
 end
 
 -- True when Waypoint UI is following a bridge-owned custom navigation.
@@ -155,6 +175,8 @@ function WUI.SetNavigation(target, suppressAudio)
         flags = ns.OWNER_FLAG,
         suppressAudio = suppressAudio and true or false,
         stripCoordinates = target.stripCoordinates and true or false,
+        iconTexture = target.iconTexture,
+        iconType = target.iconTexture and "TEXTURE" or nil,
     })
 
     if not ok then

@@ -13,7 +13,7 @@ local quests, st, wui = H.quests, H.st, H.wui
 local function kill(n, r) return { type = "monster", finished = n >= r, numFulfilled = n, numRequired = r } end
 local function patrolPoint(dist) return goto_(dist, 0, { radius = 40, hidePin = true }) end
 
-local ns = H.load(ADDON_ROOT, { debug = true, strategy = "native-first" })
+local RXPW = H.load(ADDON_ROOT, { debug = true, strategy = "native-first" })
 local slash = H.slash
 
 local patrol = {}

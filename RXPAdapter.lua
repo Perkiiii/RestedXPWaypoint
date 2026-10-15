@@ -1,5 +1,5 @@
--- RXP Waypoint Bridge
--- RXPAdapter: every read of RestedXP internals lives in this file.
+-- RestedXP Waypoint
+-- RXPAdapter: RestedXP target reads (instruction reads are in the resolvers).
 --
 -- RXPG_ARROW is RestedXP's arrow frame; RXPG_ARROW.element is the waypoint
 -- RestedXP's routing logic has currently resolved (map.lua, updateArrowData).
@@ -19,11 +19,11 @@
 -- RestedXP never clears RXPG_ARROW.element; when no waypoint remains it only
 -- hides the arrow. A stale element is recognised by skip/hidden or by its
 -- step no longer being active. Arrow visibility is deliberately NOT used for
--- validity: RestedXP settings, instances and a future "hide RXP arrow" option
+-- validity: RestedXP settings, instances and the "Hide RestedXP Arrow" option
 -- can all hide the arrow while the waypoint is still current.
 
-local _, ns = ...
-local RXP = ns.RXP
+local _, RXPW = ...
+local RXP = RXPW.RXP
 
 local RXP_ADDON = "RXPGuides"
 
@@ -40,10 +40,10 @@ function RXP.DestinationKey(mapID, x, y)
 end
 
 function RXP.GetStatus()
-    local loaded = ns.IsLoaded(RXP_ADDON)
+    local loaded = RXPW.IsLoaded(RXP_ADDON)
     return {
         loaded = loaded,
-        version = loaded and ns.GetVersion(RXP_ADDON) or nil,
+        version = loaded and RXPW.GetVersion(RXP_ADDON) or nil,
         arrowAvailable = type(_G.RXPG_ARROW) == "table",
     }
 end
@@ -67,7 +67,7 @@ function RXP.GetTarget()
     end
 
     local step = type(element.step) == "table" and element.step or nil
-    local labelInfo = ns.Label.Resolve(element)
+    local labelInfo = RXPW.Label.Resolve(element)
     local target = {
         element = element, -- for NavigationResolver; treat as read-only RestedXP data
         mapID = element.zone,
@@ -95,12 +95,12 @@ function RXP.GetTarget()
 
     local mapID, x, y = element.zone, element.x, element.y
     if type(mapID) ~= "number" then
-        if ns.IsFiniteNumber(element.wx) and ns.IsFiniteNumber(element.wy) then
+        if RXPW.IsFiniteNumber(element.wx) and RXPW.IsFiniteNumber(element.wy) then
             return target, "world-coordinate-only target (e.g. corpse or spirit healer), not supported yet"
         end
         return target, "waypoint has no map ID"
     end
-    if not (ns.IsFiniteNumber(x) and ns.IsFiniteNumber(y)) then
+    if not (RXPW.IsFiniteNumber(x) and RXPW.IsFiniteNumber(y)) then
         return target, "waypoint coordinates are missing or invalid"
     end
     if x < 0 or x > 100 or y < 0 or y > 100 then
@@ -121,6 +121,55 @@ function RXP.GetTarget()
     return target, nil
 end
 
+--------------------------------------------------------------------------------
+-- RestedXP's own "Hide waypoint arrow" option (settings page, v0.6.0)
+--
+-- RestedXP stores it as addon.settings.profile.disableArrow (SettingsPanel.lua
+-- ~732). It is visual only: updateArrowData (map.lua ~1047) still assigns
+-- RXPG_ARROW.element and merely keeps the frame hidden, and DrawArrow returns
+-- early, so the bridge keeps receiving RestedXP's targets. The value lives in
+-- RestedXP's profile, not RXPWDB: reading it live keeps RestedXP's checkbox and
+-- ours identical. Setting it does what RestedXP's own option setter does
+-- (save, DrawArrow) and asks RestedXP to re-apply visibility on its next
+-- update tick (addon.UpdateMap() only raises its flag). No RestedXP function
+-- is replaced. The addon object comes from the public AceAddon registry.
+--------------------------------------------------------------------------------
+
+local function GetRXPAddon()
+    local LibStub = _G.LibStub
+    local AceAddon = (type(LibStub) == "table" or type(LibStub) == "function") and LibStub("AceAddon-3.0", true)
+    if type(AceAddon) ~= "table" or type(AceAddon.GetAddon) ~= "function" then return nil end
+    local ok, addon = pcall(AceAddon.GetAddon, AceAddon, RXP_ADDON, true)
+    if ok and type(addon) == "table" then return addon end
+    return nil
+end
+
+local function GetRXPProfile(addon)
+    local settings = addon and addon.settings
+    local profile = type(settings) == "table" and settings.profile
+    return type(profile) == "table" and profile or nil
+end
+
+-- true / false, or nil when RestedXP or its settings are unavailable.
+function RXP.IsArrowHidden()
+    local profile = GetRXPProfile(GetRXPAddon())
+    if not profile then return nil end
+    return profile.disableArrow == true
+end
+
+-- Returns true when the option was set.
+function RXP.SetArrowHidden(hidden)
+    local addon = GetRXPAddon()
+    local profile = GetRXPProfile(addon)
+    if not profile then return false end
+    profile.disableArrow = hidden and true or false
+    local frame = addon.arrowFrame
+    if type(addon.DrawArrow) == "function" and type(frame) == "table" then pcall(addon.DrawArrow, frame) end
+    if hidden and type(frame) == "table" and type(frame.Hide) == "function" then pcall(frame.Hide, frame) end
+    if type(addon.UpdateMap) == "function" then pcall(addon.UpdateMap) end
+    return true
+end
+
 -- Player distance in yards to the target's world position, using the
 -- HereBeDragons library RestedXP itself uses for its arrow (element.wx/wy
 -- are HBD world coordinates). Returns nil when it cannot be measured.
@@ -131,7 +180,7 @@ end
 -- Same, for any RestedXP waypoint element (e.g. every point of a #loop circuit).
 function RXP.GetDistanceToElement(element)
     if type(element) ~= "table" then return nil end
-    if not (ns.IsFiniteNumber(element.wx) and ns.IsFiniteNumber(element.wy)) then return nil end
+    if not (RXPW.IsFiniteNumber(element.wx) and RXPW.IsFiniteNumber(element.wy)) then return nil end
 
     local LibStub = _G.LibStub
     local HBD = type(LibStub) == "table" and LibStub("HereBeDragons-2.0", true)
@@ -142,7 +191,7 @@ function RXP.GetDistanceToElement(element)
     local ok, px, py, instance = pcall(HBD.GetPlayerWorldPosition, HBD)
     if not ok or not px or instance ~= element.instance then return nil end
     local okDistance, distance = pcall(HBD.GetWorldDistance, HBD, instance, px, py, element.wx, element.wy)
-    if okDistance and ns.IsFiniteNumber(distance) then return distance end
+    if okDistance and RXPW.IsFiniteNumber(distance) then return distance end
     return nil
 end
 
@@ -181,6 +230,14 @@ function RXP.HasTargetChanged()
     seenElement, seenZone, seenX, seenY = element, zone, x, y
     seenSkip, seenHidden, seenStep, seenActive = skip, hidden, step, active
     return true
+end
+
+-- The raw arrow element (read-only RestedXP data) or nil; no label work, for
+-- the once-a-second activity observation (Nav.GetActivitySignature).
+function RXP.GetArrowElement()
+    local arrow = _G.RXPG_ARROW
+    local element = type(arrow) == "table" and arrow.element or nil
+    return type(element) == "table" and element or nil
 end
 
 -- Makes the next HasTargetChanged() call report a change.

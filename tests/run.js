@@ -1,4 +1,4 @@
-// Offline test runner for RXP Waypoint Bridge.
+// Offline test runner for RestedXP Waypoint.
 // Runs every tests/*_test.lua in fengari (a Lua VM in JavaScript) with
 // ADDON_ROOT set to the repository root. These tests use mocked RestedXP,
 // Waypoint UI and WoW APIs; they do not prove in-game compatibility.
@@ -18,6 +18,25 @@ try {
 const { lua, lauxlib, lualib, to_luastring } = fengari;
 
 const root = path.resolve(__dirname, '..').replace(/\\/g, '/');
+const tocPath = path.join(root, 'RestedXPWaypoint_Camelot.toc');
+const toc = fs.readFileSync(tocPath, 'utf8');
+const tocFiles = toc.split(/\r?\n/).filter((line) => line && !line.startsWith('#'));
+const expectedTocFiles = [
+    'Core.lua', 'LabelResolver.lua', 'RXPAdapter.lua', 'NavigationResolver.lua',
+    'WaypointAdapter.lua', 'Sync.lua', 'Preview.lua', 'SettingsPanel.lua',
+];
+if (!/^## Interface: 16001$/m.test(toc)
+    || !/^## Title: RestedXP Waypoint$/m.test(toc)
+    || !/^## Notes: An unofficial companion addon that displays RestedXP navigation through Waypoint UI\.$/m.test(toc)
+    || !/^## Version: 0\.6\.1$/m.test(toc)
+    || !/^## OptionalDeps: RXPGuides, WaypointUI$/m.test(toc)
+    || !/^## SavedVariables: RXPWDB$/m.test(toc)
+    || /RXPWaypointBridge/.test(toc)
+    || JSON.stringify(tocFiles) !== JSON.stringify(expectedTocFiles)) {
+    console.error('Addon TOC metadata, dependencies, SavedVariables, or module order is incorrect.');
+    process.exit(1);
+}
+console.log('== RestedXPWaypoint_Camelot.toc metadata and module order passed');
 const files = fs.readdirSync(__dirname).filter((f) => f.endsWith('_test.lua')).sort();
 let failed = 0;
 

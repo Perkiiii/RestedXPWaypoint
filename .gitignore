@@ -7,6 +7,8 @@ Desktop.ini
 *.code-workspace
 .luarc.json
 node_modules/
+__pycache__/
+*.py[cod]
 
 # Packaging output
 *.zip
@@ -14,3 +16,8 @@ node_modules/
 
 # Logs
 *.log
+
+# Personal WoW state must never become addon source.
+/WTF/
+/RestedXPWaypoint.lua*
+/RXPWaypointBridge.lua*

@@ -12,7 +12,7 @@ local function object(n, r) return { type = "object", finished = false, numFulfi
 local function done(t, r) return { type = t, finished = true, numFulfilled = r, numRequired = r } end
 local function patrolPoint(dist, radius) return goto_(dist, 0, { radius = radius, hidePin = true }) end
 
-local ns = H.load(ADDON_ROOT, { debug = true, strategy = "native-first" })
+local RXPW = H.load(ADDON_ROOT, { debug = true, strategy = "native-first" })
 local slash = H.slash
 
 ----------------------------------------------------------------------------
@@ -57,9 +57,9 @@ check("D: both candidates are listed",
   and H.lastChat("Candidate 93552 %(Harvesting Windstones%) obj 1 9/15 %- eligible") ~= nil)
 check("D: selection reason is RestedXP's explicit priority",
   H.lastChat("selected quest 92465: explicit RestedXP priority %(\"Prioritize Roiling Winds\"%)") ~= nil)
-check("label for the patrol waypoint is not the \"+1\" placeholder", ns.RXP.GetTarget().label ~= "1", ns.RXP.GetTarget().label)
+check("label for the patrol waypoint is not the \"+1\" placeholder", RXPW.RXP.GetTarget().label ~= "1", RXPW.RXP.GetTarget().label)
 check("hybrid still sees an intermediate route point here",
-  ns.Nav.Decide(ns.RXP.GetTarget(), "hybrid").reason:find("pass%-through") ~= nil)
+  RXPW.Nav.Decide(RXPW.RXP.GetTarget(), "hybrid").reason:find("pass%-through") ~= nil)
 
 -- Test E: Windstone objective finished but its sticky step not yet dropped (RestedXP lag) -> ignored
 windstoneObjective.completed = true
@@ -227,12 +227,12 @@ local stepPatrol3 = newStep(70, { completewith = "next", sticky = true, loop = "
 local stepServed3 = newStep(71, {}, H.header("Kill things"), H.complete(92490, 1))
 H.setActiveSteps(stepPatrol3, stepServed3)
 point(vp); advance(2)
-local v = ns.Sync.GetState().lastVerification or {}
+local v = RXPW.Sync.GetState().lastVerification or {}
 check("verification failure is distinct from classification", H.mode() == "coordinates" and v.questID == 92490 and v.ok == false
   and H.lastChat("Native verification failed after classification passed %(no native navigation target") ~= nil)
 
 ----------------------------------------------------------------------------
--- /rxpwb inspect on the Agitators patrol
+-- /rxpw inspect on the Agitators patrol
 H.setActiveSteps(stepPatrol, stepAgitators)
 quests[92465] = { title = "Agitators", ready = false, poi = 45, objectives = { kill(3, 7), kill(3, 6) } }
 agitators1.completed, agitators2.completed = nil, nil

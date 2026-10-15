@@ -11,7 +11,7 @@ H.verbose = true
 local check, advance, point, newStep, goto_ = H.check, H.advance, H.point, H.newStep, H.goto_
 local quests, st, wui = H.quests, H.st, H.wui
 
-local ns = H.load(ADDON_ROOT, { debug = true, strategy = "native-first" })
+local RXPW = H.load(ADDON_ROOT, { debug = true, strategy = "native-first" })
 local slash = H.slash
 local QUEST_ICON_DONE = "Interface\\AddOns\\WaypointUI\\Art\\Icons\\CompleteQuest"
 local QUEST_ICON_OPEN = "Interface\\AddOns\\WaypointUI\\Art\\Icons\\IncompleteQuest"
@@ -54,8 +54,8 @@ check("A: step 36 continues the same native session", H.mode() == "native" and s
 local before = #H.chat
 slash("inspect")
 local text = table.concat(H.chat, "\n", before + 1)
-check("A: inspect explains role and context", text:find("Waypoint role: turn%-in destination") ~= nil
-  and text:find("Quest context: 93552 Harvesting Windstones %(turn%-in, ready%)") ~= nil)
+check("A: inspect explains role and context", text:find("role: turn-in destination", 1, true) ~= nil
+  and text:find("Quest context: quest 93552 Harvesting Windstones | turn-in, ready", 1, true) ~= nil, text)
 
 ----------------------------------------------------------------------------
 -- A2. RestedXP supertracked a different quest meanwhile: no continuity, helper followed
@@ -85,7 +85,7 @@ check("C: inconsistent helper -> coordinates (route preserved)", H.mode() == "co
 check("C: rejection explained", H.lastChat("native continuity rejected: the native target is not consistent with the helper waypoint") ~= nil)
 check("C: label uses quest context", wui.nav.name == "Harvesting Windstones - Ready for turn-in", wui.nav.name)
 check("C: quest icon and no coordinate line", wui.nav.iconTexture == QUEST_ICON_DONE and wui.nav.stripCoordinates == true)
-check("C: label source logged", H.lastChat("Coordinate waypoint label: Harvesting Windstones %- Ready for turn%-in %(quest context, icon: quest%)") ~= nil)
+check("C: label and icon logged", H.lastChat("Coordinate waypoint: \"Harvesting Windstones %- Ready for turn%-in\", colour NormalQuest, icon CompleteQuest") ~= nil)
 
 ----------------------------------------------------------------------------
 -- D. Turn-in completes: context cleared, next activity selected
@@ -141,8 +141,9 @@ local ilsa = goto_(52, 0)
 local ilsaStep = newStep(215, {}, ilsa, H.header("Talk to Ilsa"), H.turnin(2006, "Not Ready Yet"))
 H.setActiveSteps(ilsaStep)
 point(ilsa); advance(2)
-check("E3: quest context exists but the RestedXP instruction stays", H.mode() == "coordinates" and wui.nav.name == "Talk to Ilsa"
-  and wui.nav.iconTexture == nil and H.lastChat("Using quest context: Not Ready Yet") ~= nil, wui.nav.name)
+check("E3: quest context exists but the RestedXP instruction stays", H.mode() == "coordinates" and wui.nav.name == "Turn in Not Ready Yet"
+  and H.lastChat("Using quest context: Not Ready Yet") ~= nil, wui.nav.name)
+check("E3 (v0.5.5): the not-ready turn-in step carries the incomplete quest icon", wui.nav.iconTexture == QUEST_ICON_OPEN, wui.nav.iconTexture)
 
 ----------------------------------------------------------------------------
 -- F. Ambiguous: helper without an active anchor -> no quest name, existing fallback
@@ -164,7 +165,7 @@ point(caveEntrance); advance(2)
 check("G: cave entrance stays coordinates with its instruction", H.mode() == "coordinates" and wui.nav.name == "Enter the cave"
   and wui.nav.iconTexture == nil and H.lastChat("explicit travel instruction") ~= nil)
 check("G: route-critical role shown", (function()
-  local b = #H.chat; slash("status"); return table.concat(H.chat, "\n", b + 1):find("Waypoint role: travel instruction | route%-critical: .-yes") ~= nil
+  local b = #H.chat; slash("status"); return table.concat(H.chat, "\n", b + 1):find("role: travel instruction | route%-critical: .-yes") ~= nil
 end)())
 
 ----------------------------------------------------------------------------
@@ -209,7 +210,7 @@ local freshStep = newStep(434, {}, fresh, H.header("Talk to Ilsa"), H.turnin(200
 H.setActiveSteps(freshStep)
 point(fresh); advance(1)                 -- coordinates written under the coordinates strategy
 slash("mode native-first")               -- native transition starts (clear + delayed supertrack)
-local pending = ns.Sync.GetState().pending
+local pending = RXPW.Sync.GetState().pending
 local travel = goto_(15, 0, { text = "Leave town" })
 local travelStep = newStep(400, {}, travel)
 H.setActiveSteps(travelStep)
@@ -219,16 +220,18 @@ check("I: final state is the last RestedXP target, no stale native restore", H.m
   and st.quest ~= 2005 and wui.nav.name == "Leave town")
 
 ----------------------------------------------------------------------------
--- Other strategies are unchanged
+-- Other strategies: navigation unchanged (coordinates), presentation the same
+-- as native-first (v0.5.6: quest context label, icon and colour in every mode)
 quests[93552] = { title = "Harvesting Windstones", ready = true, poi = 91 }
 local w5 = windstoneSteps(534)
 H.setActiveSteps(w5.s34, w5.s35)
 w5.approach.skip = true
 slash("mode hybrid"); point(w5.helper); advance(2)
-check("hybrid: helper stays coordinates with its v0.4 label", H.mode() == "coordinates" and wui.nav.name == "Step 535"
-  and wui.nav.iconTexture == nil, wui.nav.name)
+check("hybrid: helper stays coordinates, with the quest context label and icon", H.mode() == "coordinates"
+  and wui.nav.name == "Harvesting Windstones - Ready for turn-in" and wui.nav.iconTexture == QUEST_ICON_DONE, wui.nav.name)
 slash("mode coordinates"); advance(2)
-check("coordinates: no quest context label", H.mode() == "coordinates" and wui.nav.name == "Step 535" and wui.nav.iconTexture == nil, wui.nav.name)
+check("coordinates: same quest context label and icon", H.mode() == "coordinates"
+  and wui.nav.name == "Harvesting Windstones - Ready for turn-in" and wui.nav.iconTexture == QUEST_ICON_DONE, wui.nav.name)
 
 -- Unverified Waypoint UI version: no quest icon (label still improved)
 H.versions.WaypointUI = "2.0.0"

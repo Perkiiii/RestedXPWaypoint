@@ -11,9 +11,9 @@ local function item(numFulfilled, numRequired) return { type = "item", finished 
 local function object(numFulfilled, numRequired) return { type = "object", finished = false, numFulfilled = numFulfilled, numRequired = numRequired } end
 
 -- A previously saved strategy is preserved (nobody is switched to native-first).
-local ns = H.load(ADDON_ROOT, { debug = true, strategy = "hybrid" })
+local RXPW = H.load(ADDON_ROOT, { debug = true, strategy = "hybrid" })
 local slash = H.slash
-check("saved strategy preserved on load", ns.db.strategy == "hybrid")
+check("saved strategy preserved on load", RXPW.db.strategy == "hybrid")
 
 ----------------------------------------------------------------------------
 -- Zombies: #loop step, lowPrio + radius patrol points, two objectives of one quest
@@ -26,7 +26,7 @@ point(z1); advance(1)
 check("hybrid keeps a kill objective on coordinates (v0.4 behaviour)", H.mode() == "coordinates" and H.navAt(60) and st.setQuestCalls == 0)
 
 slash("mode native-first")
-check("strategy saved", RXPWaypointBridgeDB.strategy == "native-first")
+check("strategy saved", RXPWDB.strategy == "native-first")
 advance(1.5)
 local m, q, kind = H.mode()
 check("native-first: loop kill objective goes native", m == "native" and q == 364 and kind == "objective", m)
@@ -83,7 +83,7 @@ point(w1); advance(2)
 m, q, kind = H.mode()
 check("Windstone: radius objective waypoint goes native", m == "native" and q == 93552 and kind == "objective", m)
 check("Windstone classified as interact", H.lastChat("quest objective detected: interact quest 93552") ~= nil)
-local hybridView = ns.Nav.Decide(ns.RXP.GetTarget(), "hybrid")
+local hybridView = RXPW.Nav.Decide(RXPW.RXP.GetTarget(), "hybrid")
 check("hybrid analysis still rejects the radius waypoint", hybridView.mode == "coordinates" and hybridView.reason:find("pass%-through") ~= nil, hybridView.reason)
 -- arriving inside the 7 yd radius marks the waypoint reached; navigation is kept
 calls, writes = st.setQuestCalls, wui.writes
@@ -163,7 +163,9 @@ point(p1); advance(2)
 check("parent-linked objective waypoint goes native", H.mode() == "native" and select(2, H.mode()) == 600)
 calls = st.setQuestCalls
 point(p2); advance(1)
-check("next parent-linked point keeps the same native quest", st.setQuestCalls == calls)
+check("next parent-linked point keeps the same native quest", st.setQuestCalls == calls
+    and H.mode() == "native" and select(2, H.mode()) == 600 and st.quest == 600 and not st.user)
+check("parent-linked continuation creates no coordinate navigation", H.wui.nav == nil)
 
 ----------------------------------------------------------------------------
 -- Verification failures fall back and are not retried
@@ -201,7 +203,9 @@ quests[750].objectives[1] = { type = "monster", finished = true, numFulfilled = 
 o750.completed = true
 H.fire("QUEST_LOG_UPDATE"); advance(2)
 m, q, kind = H.mode()
-check("same coordinates: objective -> turn-in for the same quest", m == "native" and q == 750 and kind == "turnin" and st.setQuestCalls == calls + 1)
+-- The same already-active native quest is now adopted and verified, so the
+-- kind changes without an unnecessary SetSuperTrackedQuestID call.
+check("same coordinates: objective -> turn-in for the same quest", m == "native" and q == 750 and kind == "turnin" and st.setQuestCalls == calls)
 check("transition recorded", H.transitionText() == "native quest 750 -> native quest 750", H.transitionText())
 
 ----------------------------------------------------------------------------
@@ -216,17 +220,17 @@ calls, writes = st.setQuestCalls, wui.writes
 point(l2); advance(1)
 quests[900].objectives[1].numFulfilled = 4; H.fire("QUEST_LOG_UPDATE"); advance(1)
 check("manual waypoint respected while RestedXP cycles the same objective", wui.nav.name == "Repair Vendor" and st.setQuestCalls == calls and wui.writes == writes)
-check("outside change recorded", (ns.Sync.GetState().external or ""):find("another waypoint") ~= nil, ns.Sync.GetState().external)
+check("outside change recorded", (RXPW.Sync.GetState().external or ""):find("another waypoint") ~= nil, RXPW.Sync.GetState().external)
 local n1 = goto_(170, 0, { text = "Run to the bridge" }); newStep(81, {}, n1)
 point(n1); advance(2)
-check("bridge resumes at RestedXP's next destination", wui.nav.flags == "RXPWaypointBridge" and H.navAt(170))
+check("bridge resumes at RestedXP's next destination", wui.nav.flags == "RestedXPWaypoint" and H.navAt(170))
 
 ----------------------------------------------------------------------------
 -- Stale callbacks from an interrupted native transition
 quests[950] = { title = "Interrupted", ready = false, poi = 180, objectives = { kill(0, 3) } }
 local i1 = goto_(180, 0); newStep(90, {}, i1, H.complete(950, 1))
 point(i1); advance(0.5)
-local midPending = ns.Sync.GetState().pending
+local midPending = RXPW.Sync.GetState().pending
 local i2 = goto_(185, 0, { text = "Leave the area" }); newStep(91, {}, i2)
 point(i2); advance(2)
 check("transition was in progress", midPending == true)
@@ -244,7 +248,7 @@ slash("mode hybrid")
 check("hybrid keeps the objective on coordinates", H.mode() == "coordinates")
 slash("mode native-first"); advance(2)
 check("native-first goes native again", H.mode() == "native" and select(2, H.mode()) == 960)
-check("strategy persisted", RXPWaypointBridgeDB.strategy == "native-first")
+check("strategy persisted", RXPWDB.strategy == "native-first")
 
 -- No repeated writes when nothing changes
 calls, writes = st.setQuestCalls, wui.writes

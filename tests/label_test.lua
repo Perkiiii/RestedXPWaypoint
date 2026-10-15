@@ -1,19 +1,21 @@
 -- Offline unit tests for LabelResolver.lua (run with: node tests/run.js).
-local ns = { Label = {} }
+local RXPW = { Label = {} }
 local chunk = assert(loadfile(ADDON_ROOT .. "/LabelResolver.lua"))
-chunk("RXPWaypointBridge", ns)
-local L = ns.Label
-local fails = 0
+chunk("RestedXPWaypoint", RXPW)
+local L = RXPW.Label
+local passes, fails = 0, 0
 local function eq(name, got, want)
   if got ~= want then fails = fails + 1; print("FAIL " .. name .. ": got [" .. tostring(got) .. "] want [" .. tostring(want) .. "]")
-  else print("ok   " .. name .. " -> " .. tostring(got)) end
+  else passes = passes + 1; print("ok   " .. name .. " -> " .. tostring(got)) end
 end
 -- Cleaning
 eq("chat bubble + RXP colour", L.Clean("|Tinterface/worldmap/chatbubble_64grey.blp:20|tTalk to |cRXP_FRIENDLY_Karos|r"), "Talk to Karos")
 eq("buy line with item icon", L.Clean("|cRXP_BUY_Buy a|r |T135343:0|t[Scimitar] |cRXP_BUY_from him|r"), "Buy a [Scimitar] from him")
 eq("npc id suffix", L.Clean("|Tinterface/worldmap/chatbubble_64grey.blp:20|tTalk to |cRXP_FRIENDLY_Elatrell Featherlight::251368|r."), "Talk to Elatrell Featherlight.")
-eq("progress counter", L.Clean("Worg slain: 3/10"), "Worg slain")
-eq("progress paren", L.Clean("Kill Worgs (3/10)"), "Kill Worgs")
+-- v0.5.6: live progress is kept (the bridge refreshes the label when it changes).
+eq("progress counter kept", L.Clean("Worg slain: 3/10"), "Worg slain: 3/10")
+eq("progress paren kept", L.Clean("Kill Worgs (3/10)"), "Kill Worgs (3/10)")
+eq("leading progress kept", L.Clean("1/15 Windstone Cluster"), "1/15 Windstone Cluster")
 eq("keeps numbers in instruction", L.Clean("Kill 10 Worgs"), "Kill 10 Worgs")
 eq("unresolved placeholder", L.Clean("Accept *quest*"), nil)
 eq("literal backslash-n", L.Clean("Talk to Renferrel\nBuy a Scimitar"), "Talk to Renferrel")
@@ -42,7 +44,25 @@ local g = goto_()
 step(62, g, {text = "|Tinterface/worldmap/chatbubble_64grey.blp:20|tTalk to |cRXP_FRIENDLY_Karos|r", textOnly = true},
   {tag="turnin", text="Turn in Supplying the Sepulcher", completed=true}, {tag="fp", text="Get the Sepulcher flight path", completed=true},
   {tag="fly", text="Fly to the Undercity"}, {tag="target"})
-local r = L.Resolve(g); eq("karos header", r.label, "Talk to Karos"); eq("karos source", r.source, "following instruction")
+-- v0.5.6: the first pending real instruction wins over the ">>" heading.
+local r = L.Resolve(g); eq("karos instruction", r.label, "Fly to the Undercity"); eq("karos source", r.source, "following instruction")
+
+-- Only a heading left (every instruction done): the heading, not "Step N"
+local gh = goto_()
+step(64, gh, {text = "Talk to |cRXP_FRIENDLY_Karos|r", textOnly = true}, {tag="turnin", text="Turn in X", completed=true, skip=true})
+local rh = L.Resolve(gh); eq("heading fallback", rh.label, "Talk to Karos"); eq("heading source", rh.source, "following heading")
+
+-- RestedXP's render flag: the guide window sets completed = true on text-only
+-- lines it draws. A drawn heading still counts; a done instruction does not.
+local gr = goto_({completed = true})
+step(65, gr, {text = "Click on the |cRXP_PICK_Crystals|r", textOnly = true, completed = true},
+  {text = "|cRXP_WARN_Expect to break about 10 stones|r.", textOnly = true, completed = true},
+  {tag="complete", questId = 93552, obj = 1, text = "0/15 Windstone Cluster", textOnly = false})
+eq("render flags: live objective progress", L.Resolve(gr).label, "0/15 Windstone Cluster")
+gr.step.elements[4].text = "1/15 Windstone Cluster"
+eq("render flags: progress updates", L.Resolve(gr).label, "1/15 Windstone Cluster")
+gr.step.elements[4].completed = true; gr.step.elements[4].skip = true
+eq("render flags: drawn heading after the objective is done", L.Resolve(gr).label, "Click on the Crystals")
 
 -- No header: completed instructions are skipped
 local g2 = goto_()
@@ -82,7 +102,7 @@ step(75, g6, {tag="complete", rawtext="Kill |cRXP_ENEMY_Worgs|r", text="Worg sla
 eq("rawtext", L.Resolve(g6).label, "Kill Worgs")
 local g7 = goto_()
 step(76, g7, {tag="complete", rawtext="Kill Worgs %d/%d", text="Worg slain: 3/10"})
-eq("format rawtext ignored", L.Resolve(g7).label, "Worg slain")
+eq("format rawtext ignored", L.Resolve(g7).label, "Worg slain: 3/10")
 
 -- Warning only used as last resort
 local g8 = goto_()
@@ -100,6 +120,6 @@ eq("arrowtext", L.Resolve(g10).label, "Arrow text")
 eq("corpse title", L.Resolve({title="Corpse", generated=1}).label, "Corpse")
 eq("no step fallback", L.Resolve({}).label, "RestedXP")
 
-print(fails == 0 and "ALL PASSED" or (fails .. " FAILED"))
+print(string.format("%d passed, %d failed", passes, fails))
 
 if fails > 0 then error(fails .. " test(s) failed", 0) end

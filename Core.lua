@@ -1,19 +1,20 @@
--- RXP Waypoint Bridge
+-- RestedXP Waypoint
 -- Core: shared helpers, saved settings, initialisation and slash commands.
 -- Load order (see .toc): Core.lua, LabelResolver.lua, RXPAdapter.lua,
--- NavigationResolver.lua, WaypointAdapter.lua, Sync.lua
+-- NavigationResolver.lua, WaypointAdapter.lua, Sync.lua, Preview.lua,
+-- SettingsPanel.lua
 
-local addonName, ns = ...
+local addonName, RXPW = ...
 
 -- Flag attached to every Waypoint UI navigation we create, so we can tell
 -- bridge-owned navigation apart from the player's own.
-ns.OWNER_FLAG = "RXPWaypointBridge"
+RXPW.OWNER_FLAG = "RestedXPWaypoint"
 
-ns.Label = {}
-ns.RXP = {}
-ns.Nav = {}
-ns.WUI = {}
-ns.Sync = {}
+RXPW.Label = {}
+RXPW.RXP = {}
+RXPW.Nav = {}
+RXPW.WUI = {}
+RXPW.Sync = {}
 
 local C_AddOns = C_AddOns
 local IsAddOnLoaded = (C_AddOns and C_AddOns.IsAddOnLoaded) or _G.IsAddOnLoaded
@@ -27,7 +28,7 @@ local huge = math.huge
 local floor = math.floor
 
 --------------------------------------------------------------------------------
--- Settings (SavedVariables: RXPWaypointBridgeDB)
+-- Settings (SavedVariables: RXPWDB)
 --------------------------------------------------------------------------------
 
 -- strategy: "coordinates" (v0.3 behaviour, safe default), "hybrid" (v0.4:
@@ -35,80 +36,89 @@ local floor = math.floor
 -- native supertracking for eligible turn-ins and quest objectives).
 local STRATEGIES = { coordinates = true, hybrid = true, ["native-first"] = true }
 
+-- Appearance (v0.6.0) controls only what the bridge supplies to Waypoint UI
+-- for its own custom navigation: questIcons / serviceIcons = context icons,
+-- customColors = the quest colour or service palette (r/g/b). Native quest
+-- markers are drawn by Waypoint UI and are never affected.
 local DEFAULTS = {
     autoSync = true,
     debug = false,
     strategy = "coordinates",
+    questIcons = true,
+    serviceIcons = true,
+    customColors = true,
 }
+-- Restore order: presentation first, sync last (it starts evaluating).
+local SETTING_ORDER = { "questIcons", "serviceIcons", "customColors", "debug", "strategy", "autoSync" }
 
 -- Replaced by the saved table on ADDON_LOADED.
-ns.db = {}
-for key, value in pairs(DEFAULTS) do ns.db[key] = value end
+RXPW.db = {}
+for key, value in pairs(DEFAULTS) do RXPW.db[key] = value end
 
 local function LoadSettings()
-    local db = _G.RXPWaypointBridgeDB
+    local db = _G.RXPWDB
     if type(db) ~= "table" then
         db = {}
-        _G.RXPWaypointBridgeDB = db
+        _G.RXPWDB = db
     end
     for key, value in pairs(DEFAULTS) do
         if type(db[key]) ~= type(value) then db[key] = value end
     end
     if not STRATEGIES[db.strategy] then db.strategy = DEFAULTS.strategy end
-    ns.db = db
+    RXPW.db = db
 end
 
 --------------------------------------------------------------------------------
 -- Logging and shared helpers
 --------------------------------------------------------------------------------
 
-local PREFIX = "|cff33ff99RXP Waypoint Bridge|r: "
-local DEBUG_PREFIX = "|cff33ff99RXPWB|r |cff999999[debug]|r "
+local PREFIX = "|cff33ff99RestedXP Waypoint|r: "
+local DEBUG_PREFIX = "|cff33ff99RXPW|r |cff999999[debug]|r "
 
-function ns.Print(fmt, ...)
+function RXPW.Print(fmt, ...)
     local text = select("#", ...) > 0 and format(fmt, ...) or fmt
     DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. text)
 end
 
 -- Continuation line without the prefix, for multi-line output.
-function ns.PrintLine(fmt, ...)
+function RXPW.PrintLine(fmt, ...)
     local text = select("#", ...) > 0 and format(fmt, ...) or fmt
     DEFAULT_CHAT_FRAME:AddMessage("   " .. text)
 end
 
--- Only shown while /rxpwb debug is on.
-function ns.Debug(fmt, ...)
-    if not ns.db.debug then return end
+-- Only shown while /rxpw debug is on.
+function RXPW.Debug(fmt, ...)
+    if not RXPW.db.debug then return end
     local text = select("#", ...) > 0 and format(fmt, ...) or fmt
     DEFAULT_CHAT_FRAME:AddMessage(DEBUG_PREFIX .. text)
 end
 
-function ns.GetVersion(addon)
+function RXPW.GetVersion(addon)
     if not GetAddOnMetadata then return nil end
     local ok, version = pcall(GetAddOnMetadata, addon or addonName, "Version")
     return ok and version or nil
 end
 
-function ns.IsLoaded(addon)
+function RXPW.IsLoaded(addon)
     if not IsAddOnLoaded then return false end
     local ok, loaded = pcall(IsAddOnLoaded, addon)
     return ok and loaded and true or false
 end
 
-function ns.IsFiniteNumber(n)
+function RXPW.IsFiniteNumber(n)
     return type(n) == "number" and n == n and n ~= huge and n ~= -huge
 end
 
-function ns.FormatCoord(n)
-    return ns.IsFiniteNumber(n) and format("%.2f", n) or tostring(n)
+function RXPW.FormatCoord(n)
+    return RXPW.IsFiniteNumber(n) and format("%.2f", n) or tostring(n)
 end
 
 -- "Label - map 1429 (Elwynn Forest) @ 42.10, 65.30"
-function ns.DescribeTarget(target)
+function RXPW.DescribeTarget(target)
     return format("%s - map %s%s @ %s, %s",
         target.label or "RestedXP", tostring(target.mapID),
         target.mapName and (" (" .. target.mapName .. ")") or "",
-        ns.FormatCoord(target.x), ns.FormatCoord(target.y))
+        RXPW.FormatCoord(target.x), RXPW.FormatCoord(target.y))
 end
 
 local function YesNo(value)
@@ -128,15 +138,25 @@ end
 -- Commands
 --------------------------------------------------------------------------------
 
-function ns.PrintHelp()
-    ns.Print("v%s commands:", ns.GetVersion() or "?")
-    ns.PrintLine("/rxpwb status - show dependency, waypoint and sync status")
-    ns.PrintLine("/rxpwb sync - send RestedXP's current waypoint to Waypoint UI now")
-    ns.PrintLine("/rxpwb on - enable automatic sync (currently %s)", OnOff(ns.db.autoSync))
-    ns.PrintLine("/rxpwb off - disable automatic sync")
-    ns.PrintLine("/rxpwb debug - toggle debug messages (currently %s)", OnOff(ns.db.debug))
-    ns.PrintLine("/rxpwb mode coordinates||hybrid||native-first - navigation strategy (currently %s)", ns.db.strategy)
-    ns.PrintLine("/rxpwb inspect - show how the resolver reads RestedXP's current step")
+function RXPW.PrintHelp()
+    RXPW.Print("RestedXP Waypoint v%s commands:", RXPW.GetVersion() or "?")
+    RXPW.PrintLine("Usage: /rxpw <command> [arguments]")
+    RXPW.PrintLine("/rxpw config - open the settings page (Options > AddOns > RestedXP Waypoint)")
+    RXPW.PrintLine("/rxpw status - show dependency, waypoint and sync status")
+    RXPW.PrintLine("/rxpw sync - send RestedXP's current waypoint to Waypoint UI now")
+    RXPW.PrintLine("/rxpw on - enable automatic sync (currently %s)", OnOff(RXPW.db.autoSync))
+    RXPW.PrintLine("/rxpw off - disable automatic sync")
+    RXPW.PrintLine("/rxpw debug - toggle debug messages (currently %s)", OnOff(RXPW.db.debug))
+    RXPW.PrintLine("/rxpw mode coordinates - use RestedXP coordinates for every destination")
+    RXPW.PrintLine("/rxpw mode hybrid - use native navigation for eligible turn-ins")
+    RXPW.PrintLine("/rxpw mode native-first - use native navigation for eligible objectives and turn-ins")
+    RXPW.PrintLine("Current navigation strategy: %s", RXPW.db.strategy)
+    RXPW.PrintLine("/rxpw inspect - show how the resolver reads RestedXP's current step")
+    RXPW.PrintLine("/rxpw preview all close - cycle through all marker icons nearby")
+    RXPW.PrintLine("/rxpw preview all far - cycle through all marker icons farther away")
+    RXPW.PrintLine("/rxpw preview next - show the next marker icon")
+    RXPW.PrintLine("/rxpw preview flightmaster - show the flightmaster marker icon")
+    RXPW.PrintLine("/rxpw preview off - remove the preview and resume automatic sync")
 end
 
 local KIND_NAMES = { turnin = "turn-in", objective = "objective" }
@@ -149,152 +169,287 @@ local function DescribeMode(mode, questID, kind)
     return mode or "none"
 end
 
--- Waypoint role, quest context and continuity lines (native-first analysis).
-local function PrintContext(decision)
-    if decision.role then
-        ns.PrintLine("Waypoint role: %s | route-critical: %s", decision.role, YesNo(decision.routeCritical))
+-- Navigation, quest context and presentation lines. They are independent:
+-- navigation (role, coordinates) is what RestedXP's waypoint is; the quest
+-- context (native-first structural analysis, in every strategy since v0.5.6)
+-- decides the marker icon and colour. For coordinate decisions the target is
+-- prepared like Sync does (RXPW.Sync.PrepareTarget: label, icon, tint), so the
+-- caller can compare it with what Waypoint UI shows.
+local QUEST_KIND_NAMES = { accept = "accept", turnin = "turn-in", objective = "objective" }
+
+local function PrintContext(decision, target)
+    local ctx = target and RXPW.Nav.GetContextDecision(target, decision) or decision
+    local iconName, tintName, p
+    if target and decision.mode ~= "native" then
+        iconName, tintName = select(2, RXPW.Sync.PrepareTarget(target, decision))
+        p = target.presentation
     end
-    local c = decision.context
+
+    if target then
+        RXPW.PrintLine("Navigation: %s | role: %s | route-critical: %s | map %s @ %s, %s",
+            DescribeMode(decision.mode, decision.questID, decision.kind), tostring(ctx.role or "-"),
+            YesNo(ctx.routeCritical), tostring(target.mapID), RXPW.FormatCoord(target.x), RXPW.FormatCoord(target.y))
+    elseif decision.role then
+        RXPW.PrintLine("Waypoint role: %s | route-critical: %s", decision.role, YesNo(decision.routeCritical))
+    end
+    local c = ctx.context
     if c then
-        ns.PrintLine("Quest context: %d %s (%s) from %s", c.questID, c.title,
+        RXPW.PrintLine("Quest context: quest %d %s | %s | from %s", c.questID, c.title,
             c.kind == "turnin" and (c.ready and "turn-in, ready" or "turn-in") or "objective", tostring(c.source))
+    elseif p and p.questID then
+        -- No structural quest target (a route point, an accept): the quest of
+        -- the waypoint's own step, which is what the marker shows.
+        RXPW.PrintLine("Quest context: quest %d %s | %s, %s | from %s", p.questID, tostring(p.title or "?"),
+            QUEST_KIND_NAMES[p.kind] or tostring(p.kind), tostring(p.status):lower(), tostring(p.source))
     else
-        ns.PrintLine("Quest context: none")
+        RXPW.PrintLine("Quest context: none")
     end
     if decision.continuity then
-        ns.PrintLine("Native continuity: %s - %s", decision.continuity.ok and "preserved" or "not used",
+        RXPW.PrintLine("Native continuity: %s - %s", decision.continuity.ok and "preserved" or "not used",
             tostring(decision.continuity.detail))
     end
+    if not target then return end
+    if decision.mode == "native" then
+        RXPW.PrintLine("Marker icon: Waypoint UI's native quest marker")
+        return
+    end
+    local category = "default (travel or other)"
+    if p and p.service then
+        category = "service " .. p.service
+    elseif p then
+        category = format("quest %d %s", p.questID, tostring(p.status))
+    end
+    RXPW.PrintLine("Marker icon: %s | %s | colour: %s", category,
+        iconName and format("%s (%s)", iconName, tostring(p.source)) or "Waypoint UI default",
+        target.tint and tostring(tintName) or "Waypoint UI default")
+    RXPW.PrintLine("Marker texture: %s", target.iconTexture or "Waypoint UI default")
+    if p and p.serviceSource then RXPW.PrintLine("Service source: %s", p.serviceSource) end
 end
 
 -- Candidate lines for a shared-circuit (multi-quest) decision.
 local function PrintCandidates(decision)
     if not decision.candidates then return end
     for _, c in ipairs(decision.candidates) do
-        ns.PrintLine("Candidate %d: %s%s - %s%s", c.questID, tostring(c.title or "?"),
+        RXPW.PrintLine("Candidate %d: %s%s - %s%s", c.questID, tostring(c.title or "?"),
             c.progress and (" - " .. c.progress) or "", c.eligible and "eligible" or tostring(c.reason),
             c.selected and " [selected]" or "")
     end
     if decision.questID and decision.selection then
-        ns.PrintLine("Selected %d: %s", decision.questID, decision.selection)
+        RXPW.PrintLine("Selected %d: %s", decision.questID, decision.selection)
     end
 end
 
-function ns.PrintStatus()
-    local rxp = ns.RXP.GetStatus()
-    local wui = ns.WUI.GetStatus()
-    local sync = ns.Sync.GetState()
+function RXPW.PrintStatus()
+    local rxp = RXPW.RXP.GetStatus()
+    local wui = RXPW.WUI.GetStatus()
+    local sync = RXPW.Sync.GetState()
 
-    ns.Print("status (v%s)", ns.GetVersion() or "?")
-    ns.PrintLine("RestedXP loaded: %s%s | arrow data: %s",
+    RXPW.Print("status (v%s)", RXPW.GetVersion() or "?")
+    RXPW.PrintLine("RestedXP loaded: %s%s | arrow data: %s",
         YesNo(rxp.loaded), rxp.version and (" (" .. rxp.version .. ")") or "", YesNo(rxp.arrowAvailable))
-    ns.PrintLine("Waypoint UI loaded: %s%s | navigation API: %s",
+    RXPW.PrintLine("Waypoint UI loaded: %s%s | navigation API: %s",
         YesNo(wui.loaded), wui.version and (" (" .. wui.version .. ")") or "", YesNo(wui.apiAvailable))
 
-    local target, reason = ns.RXP.GetTarget()
+    local target, reason = RXPW.RXP.GetTarget()
     if target then
-        ns.PrintLine("RXP waypoint: map %s%s @ %s, %s",
+        RXPW.PrintLine("RXP waypoint: map %s%s @ %s, %s",
             tostring(target.mapID), target.mapName and (" (" .. target.mapName .. ")") or "",
-            ns.FormatCoord(target.x), ns.FormatCoord(target.y))
-        ns.PrintLine("RXP label: %s", target.label or "(none)")
+            RXPW.FormatCoord(target.x), RXPW.FormatCoord(target.y))
+        RXPW.PrintLine("RXP label: %s", target.label or "(none)")
         local info = target.labelInfo
         if info then
-            ns.PrintLine("Label source: %s | cleaned: %s | shortened: %s | fallback: %s",
+            RXPW.PrintLine("Label source: %s | cleaned: %s | shortened: %s | fallback: %s",
                 info.source, YesNo(info.cleaned), YesNo(info.shortened), YesNo(info.fallback))
-            if ns.db.debug and info.raw then
+            if RXPW.db.debug and info.raw then
                 -- Doubled pipes make chat show the escape codes literally.
-                ns.PrintLine("Label raw text: %s", (info.raw:gsub("|", "||")))
+                RXPW.PrintLine("Label raw text: %s", (info.raw:gsub("|", "||")))
             end
         end
-        ns.PrintLine("RXP step: %s%s | arrow shown: %s",
+        RXPW.PrintLine("RXP step: %s%s | arrow shown: %s",
             tostring(target.stepIndex or "-"),
             target.hasStep and (target.stepActive and " (active)" or " (inactive)") or "",
             YesNo(target.arrowShown))
     end
     if reason then
-        ns.PrintLine("Ready to sync: %s - %s", YesNo(false), reason)
+        RXPW.PrintLine("Ready to sync: %s - %s", YesNo(false), reason)
     else
-        ns.PrintLine("Ready to sync: %s", YesNo(wui.apiAvailable))
-        local decision = ns.Nav.Decide(target, ns.db.strategy, ns.Sync.GetDecisionContext())
+        RXPW.PrintLine("Ready to sync: %s", YesNo(wui.apiAvailable))
+        local decision = RXPW.Nav.Decide(target, RXPW.db.strategy, RXPW.Sync.GetDecisionContext())
         PrintCandidates(decision)
         if decision.questID then
             local qs = decision.questState or {}
-            ns.PrintLine("Quest: %d (%s) | %s | in log: %s | ready for turn-in: %s",
+            RXPW.PrintLine("Quest: %d (%s) | %s | in log: %s | ready for turn-in: %s",
                 decision.questID, tostring(decision.questName or "?"),
                 tostring(decision.classification or decision.kind or "?"), YesNo(qs.inLog), YesNo(qs.ready))
             if decision.progress then
-                ns.PrintLine("Objectives RestedXP targets here: %s", decision.progress)
+                RXPW.PrintLine("Objectives RestedXP targets here: %s", decision.progress)
             end
             if (decision.pendingTurnIns or 1) > 1 then
-                ns.PrintLine("Turn-ins pending at this destination: %d (first one is used)", decision.pendingTurnIns)
+                RXPW.PrintLine("Turn-ins pending at this destination: %d (first one is used)", decision.pendingTurnIns)
             end
         end
-        ns.PrintLine("Native eligible (%s analysis): %s", decision.analysis or "?", YesNo(decision.nativeEligible))
-        ns.PrintLine("Decision (%s): %s - %s", ns.db.strategy,
+        RXPW.PrintLine("Native eligible (%s analysis): %s", decision.analysis or "?", YesNo(decision.nativeEligible))
+        RXPW.PrintLine("Decision (%s): %s - %s", RXPW.db.strategy,
             DescribeMode(decision.mode, decision.questID, decision.kind), tostring(decision.reason))
-        PrintContext(decision)
+        PrintContext(decision, target)
     end
 
-    local nav = ns.WUI.GetNavigation()
+    local nav = RXPW.WUI.GetNavigation()
     if nav then
-        local x = ns.IsFiniteNumber(nav.x) and nav.x * 100 or nil
-        local y = ns.IsFiniteNumber(nav.y) and nav.y * 100 or nil
-        ns.PrintLine("Waypoint UI destination: %s, map %s @ %s, %s (%s)",
-            tostring(nav.name or "?"), tostring(nav.mapID), ns.FormatCoord(x), ns.FormatCoord(y),
-            nav.flags == ns.OWNER_FLAG and ("set by bridge" .. (nav.iconTexture and ", quest icon" or "")) or "not set by bridge")
+        local x = RXPW.IsFiniteNumber(nav.x) and nav.x * 100 or nil
+        local y = RXPW.IsFiniteNumber(nav.y) and nav.y * 100 or nil
+        RXPW.PrintLine("Waypoint UI destination: %s, map %s @ %s, %s (%s)",
+            tostring(nav.name or "?"), tostring(nav.mapID), RXPW.FormatCoord(x), RXPW.FormatCoord(y),
+            nav.flags == RXPW.OWNER_FLAG and ("set by RestedXP Waypoint" .. (nav.iconTexture and ", custom icon" or "")) or "not set by RestedXP Waypoint")
     else
-        ns.PrintLine("Waypoint UI destination: none")
+        RXPW.PrintLine("Waypoint UI destination: none")
+    end
+    if target and not reason and nav and nav.flags == RXPW.OWNER_FLAG and target.label then
+        local same = RXPW.WUI.IsShowingTarget(target)
+        RXPW.PrintLine("Objective label: RestedXP \"%s\" | expected \"%s\" | displayed \"%s\" | stale: %s",
+            tostring(target.rxpLabel or target.label), target.label, tostring(nav.name),
+            same and YesNo(nav.name ~= target.label or nav.iconTexture ~= target.iconTexture)
+                or "n/a (Waypoint UI is not following this destination)")
     end
 
-    ns.PrintLine("Auto sync: %s%s | strategy: %s | debug: %s", OnOff(ns.db.autoSync),
-        ns.db.autoSync and (sync.running and " (running)" or " (not running)") or "",
-        ns.db.strategy, OnOff(ns.db.debug))
-    ns.PrintLine("Active mode: %s%s | bridge owns active destination: %s",
-        DescribeMode(sync.mode, sync.questID, sync.kind), sync.pending and " (transition in progress)" or "",
+    RXPW.PrintLine("Auto sync: %s%s | strategy: %s | debug: %s", OnOff(RXPW.db.autoSync),
+        RXPW.db.autoSync and (sync.running and " (running)" or " (not running)") or "",
+        RXPW.db.strategy, OnOff(RXPW.db.debug))
+    RXPW.PrintLine("Active mode: %s%s | RestedXP Waypoint owns active destination: %s",
+        DescribeMode(sync.mode, sync.questID, sync.kind),
+        sync.areaCheck and " (re-checking the native target for RestedXP's new activity)"
+            or sync.pending and " (transition in progress)" or "",
         YesNo(sync.bridgeActive))
     if sync.lastTransition then
-        ns.PrintLine("Last transition: %s%s", sync.lastTransition.text, Ago(sync.lastTransition.time))
+        RXPW.PrintLine("Last transition: %s%s", sync.lastTransition.text, Ago(sync.lastTransition.time))
     end
     if sync.lastFailure then
-        ns.PrintLine("Last failure/fallback: %s%s", sync.lastFailure.text, Ago(sync.lastFailure.time))
+        RXPW.PrintLine("Last failure/fallback: %s%s", sync.lastFailure.text, Ago(sync.lastFailure.time))
     end
     if sync.lastSynced then
         local prefix = sync.lastSynced.mode == "native"
             and format("[%s] ", DescribeMode("native", sync.lastSynced.questID)) or ""
-        ns.PrintLine("Last synced: %s%s%s", prefix, ns.DescribeTarget(sync.lastSynced), Ago(sync.lastSynced.time))
+        RXPW.PrintLine("Last synced: %s%s%s", prefix, RXPW.DescribeTarget(sync.lastSynced), Ago(sync.lastSynced.time))
         if sync.lastSynced.labelSource then
-            ns.PrintLine("Last synced label source: %s", sync.lastSynced.labelSource)
+            RXPW.PrintLine("Last synced label source: %s", sync.lastSynced.labelSource)
         end
     else
-        ns.PrintLine("Last synced: none this session")
+        RXPW.PrintLine("Last synced: none this session")
     end
     if sync.lastResult then
-        ns.PrintLine("Last result: %s%s", sync.lastResult, Ago(sync.lastResultTime))
+        RXPW.PrintLine("Last result: %s%s", sync.lastResult, Ago(sync.lastResultTime))
     end
     if sync.external then
-        ns.PrintLine("Outside change: %s (bridge resumes at the next RestedXP destination)", sync.external)
+        RXPW.PrintLine("Outside change: %s (sync resumes at the next RestedXP destination)", sync.external)
     end
 end
 
-local function EnableAutoSync()
-    ns.db.autoSync = true
-    if ns.Sync.Start() then
-        ns.Print("Automatic sync enabled.")
+--------------------------------------------------------------------------------
+-- Configuration (v0.6.0): the single place a setting changes
+--
+-- RXPWDB is the only store. /rxpw commands and the settings panel both call
+-- Config.Set, which validates, saves, applies the existing behaviour (start or
+-- stop sync, strategy re-evaluation, presentation refresh) and notifies
+-- listeners such as the settings panel. Nothing keeps a second copy.
+--------------------------------------------------------------------------------
+
+local Config = {}
+RXPW.Config = Config
+Config.STRATEGIES = { "coordinates", "hybrid", "native-first" }
+
+local listeners = {}
+
+function Config.Get(key)
+    return RXPW.db[key]
+end
+
+function Config.GetDefault(key)
+    return DEFAULTS[key]
+end
+
+-- fn(key) is called after a setting (or "preview" state) changed.
+function Config.RegisterListener(fn)
+    listeners[#listeners + 1] = fn
+end
+
+function Config.Notify(key)
+    for _, fn in ipairs(listeners) do
+        local ok, err = pcall(fn, key)
+        if not ok then RXPW.Debug("Settings listener error: %s", tostring(err)) end
+    end
+end
+
+local function ApplyAutoSync(enabled)
+    if enabled then
+        if RXPW.Preview and RXPW.Preview.IsActive() then RXPW.Preview.Off(true) end
+        if RXPW.Sync.Start() then
+            RXPW.Print("Automatic sync enabled.")
+        else
+            RXPW.Print("Automatic sync enabled, but RestedXP or Waypoint UI is unavailable (see /rxpw status).")
+        end
     else
-        ns.Print("Automatic sync enabled, but RestedXP or Waypoint UI is unavailable (see /rxpwb status).")
+        RXPW.Sync.Stop()
+        RXPW.Print("Automatic sync disabled. The current Waypoint UI destination was left unchanged.")
     end
 end
 
-local function DisableAutoSync()
-    ns.db.autoSync = false
-    ns.Sync.Stop()
-    ns.Print("Automatic sync disabled. The current Waypoint UI destination was left unchanged.")
+local function ApplyStrategy(strategy)
+    if strategy == "native-first" then
+        RXPW.Print("Navigation strategy: native-first (experimental). Quest turn-ins and objectives RestedXP is leading you to use native quest navigation; travel uses RestedXP coordinates.")
+    elseif strategy == "hybrid" then
+        RXPW.Print("Navigation strategy: hybrid. Eligible quest turn-ins use native quest navigation.")
+    else
+        RXPW.Print("Navigation strategy: coordinates. All destinations use RestedXP coordinates.")
+    end
+    if not RXPW.db.autoSync then
+        RXPW.PrintLine("Automatic sync is off; the strategy applies to /rxpw sync and when it is turned on.")
+    end
+    RXPW.Sync.OnStrategyChanged()
 end
 
-local function ToggleDebug()
-    ns.db.debug = not ns.db.debug
-    ns.Print("Debug messages %s.", OnOff(ns.db.debug))
+local function ApplyAppearance()
+    RXPW.Sync.OnPresentationChanged()
 end
+
+local APPLY = {
+    autoSync = ApplyAutoSync,
+    strategy = ApplyStrategy,
+    debug = function(enabled) RXPW.Print("Debug messages %s.", OnOff(enabled)) end,
+    questIcons = ApplyAppearance,
+    serviceIcons = ApplyAppearance,
+    customColors = ApplyAppearance,
+}
+
+-- Saves and applies a setting. Returns true when the value was valid.
+-- Like the slash commands always did, an unchanged value is applied again
+-- (e.g. /rxpw on restarts sync if needed); the panel only calls it on change.
+function Config.Set(key, value)
+    local default = DEFAULTS[key]
+    if default == nil or type(value) ~= type(default) then return false end
+    if key == "strategy" and not STRATEGIES[value] then return false end
+    RXPW.db[key] = value
+    APPLY[key](value)
+    Config.Notify(key)
+    return true
+end
+
+function Config.Toggle(key)
+    return Config.Set(key, not RXPW.db[key])
+end
+
+-- Resets this addon's settings through Config.Set. Restoring auto-sync and
+-- strategy can resume or change bridge navigation; Waypoint UI settings stay.
+function Config.RestoreDefaults()
+    for _, key in ipairs(SETTING_ORDER) do
+        if RXPW.db[key] ~= DEFAULTS[key] then Config.Set(key, DEFAULTS[key]) end
+    end
+    RXPW.Print("Settings restored to their defaults.")
+    Config.Notify("defaults")
+end
+
+local function EnableAutoSync() Config.Set("autoSync", true) end
+local function DisableAutoSync() Config.Set("autoSync", false) end
+local function ToggleDebug() Config.Toggle("debug") end
 
 local STRATEGY_ALIASES = {
     coordinates = "coordinates", coordinate = "coordinates", coords = "coordinates",
@@ -305,82 +460,81 @@ local STRATEGY_ALIASES = {
 local function SetStrategy(argument)
     local strategy = STRATEGY_ALIASES[argument or ""]
     if not strategy then
-        ns.Print("Navigation strategy: %s. Use /rxpwb mode coordinates, hybrid or native-first.", ns.db.strategy)
+        RXPW.Print("Navigation strategy: %s. Use /rxpw mode coordinates, hybrid or native-first.", RXPW.db.strategy)
         return
     end
-    if not STRATEGIES[strategy] then return end
-    ns.db.strategy = strategy
-    if strategy == "native-first" then
-        ns.Print("Navigation strategy: native-first (experimental). Quest turn-ins and objectives RestedXP is leading you to use native quest navigation; travel uses RestedXP coordinates.")
-    elseif strategy == "hybrid" then
-        ns.Print("Navigation strategy: hybrid. Eligible quest turn-ins use native quest navigation.")
-    else
-        ns.Print("Navigation strategy: coordinates. All destinations use RestedXP coordinates.")
+    Config.Set("strategy", strategy)
+end
+
+local function OpenSettings()
+    if not (RXPW.SettingsPanel and RXPW.SettingsPanel.Open()) then
+        RXPW.Print("The settings page is not available in this client; use the /rxpw commands.")
     end
-    if not ns.db.autoSync then
-        ns.PrintLine("Automatic sync is off; the strategy applies to /rxpwb sync and when it is turned on.")
-    end
-    ns.Sync.OnStrategyChanged()
 end
 
 -- On-demand dump of what the navigation resolver sees (never printed automatically).
-function ns.PrintInspect()
-    ns.Print("inspect (strategy %s)", ns.db.strategy)
-    local target, reason = ns.RXP.GetTarget()
+function RXPW.PrintInspect()
+    RXPW.Print("inspect (strategy %s)", RXPW.db.strategy)
+    local target, reason = RXPW.RXP.GetTarget()
     if not target then
-        ns.PrintLine("No RestedXP waypoint: %s", tostring(reason))
+        RXPW.PrintLine("No RestedXP waypoint: %s", tostring(reason))
         return
     end
-    ns.PrintLine("RXP waypoint: step %s, map %s @ %s, %s%s", tostring(target.stepIndex or "-"), tostring(target.mapID),
-        ns.FormatCoord(target.x), ns.FormatCoord(target.y), reason and (" (not usable: " .. reason .. ")") or "")
-    for _, line in ipairs(ns.Nav.Inspect(target.element)) do
-        ns.PrintLine("%s", line)
+    RXPW.PrintLine("RXP waypoint: step %s, map %s @ %s, %s%s", tostring(target.stepIndex or "-"), tostring(target.mapID),
+        RXPW.FormatCoord(target.x), RXPW.FormatCoord(target.y), reason and (" (not usable: " .. reason .. ")") or "")
+    for _, line in ipairs(RXPW.Nav.Inspect(target.element)) do
+        RXPW.PrintLine("%s", line)
     end
     if reason then return end
 
-    local decision = ns.Nav.Decide(target, "native-first", ns.Sync.GetDecisionContext())
+    local decision = RXPW.Nav.Decide(target, "native-first", RXPW.Sync.GetDecisionContext())
     PrintCandidates(decision)
-    ns.PrintLine("Native-first analysis: %s - %s", YesNo(decision.nativeEligible), tostring(decision.reason))
-    PrintContext(decision)
+    RXPW.PrintLine("Native-first analysis: %s - %s", YesNo(decision.nativeEligible), tostring(decision.reason))
+    PrintContext(decision, target)
     if decision.questID then
-        ns.PrintLine("Candidate: quest %d (%s), %s%s", decision.questID, tostring(decision.questName or "?"),
+        RXPW.PrintLine("Candidate: quest %d (%s), %s%s", decision.questID, tostring(decision.questName or "?"),
             tostring(decision.classification or decision.kind or "?"),
             decision.progress and (", targets " .. decision.progress) or "")
     end
-    if ns.db.strategy ~= "native-first" then
-        local current = ns.Nav.Decide(target, ns.db.strategy, ns.Sync.GetDecisionContext())
-        ns.PrintLine("Current strategy (%s): %s - %s", ns.db.strategy,
+    if RXPW.db.strategy ~= "native-first" then
+        local current = RXPW.Nav.Decide(target, RXPW.db.strategy, RXPW.Sync.GetDecisionContext())
+        RXPW.PrintLine("Current strategy (%s): %s - %s", RXPW.db.strategy,
             DescribeMode(current.mode, current.questID, current.kind), tostring(current.reason))
     end
 
-    local sync = ns.Sync.GetState()
-    ns.PrintLine("Active mode: %s", DescribeMode(sync.mode, sync.questID, sync.kind))
+    local sync = RXPW.Sync.GetState()
+    RXPW.PrintLine("Active mode: %s", DescribeMode(sync.mode, sync.questID, sync.kind))
     if sync.lastVerification then
         local v = sync.lastVerification
-        ns.PrintLine("Last native verification: quest %d %s - %s%s", v.questID, v.ok and "passed" or "FAILED",
+        RXPW.PrintLine("Last native verification: quest %d %s - %s%s", v.questID, v.ok and "passed" or "FAILED",
             tostring(v.detail), Ago(v.time))
     else
-        ns.PrintLine("Last native verification: none this session")
+        RXPW.PrintLine("Last native verification: none this session")
     end
 end
 
 local commands = {
-    inspect = ns.PrintInspect,
-    status = ns.PrintStatus,
-    sync = function() ns.Sync.SyncNow() end,
+    inspect = RXPW.PrintInspect,
+    preview = function(argument) RXPW.Preview.Command(argument) end,
+    status = RXPW.PrintStatus,
+    sync = function() RXPW.Sync.SyncNow() end,
     on = EnableAutoSync,
     off = DisableAutoSync,
     debug = ToggleDebug,
     mode = SetStrategy,
+    config = OpenSettings,
+    settings = OpenSettings,
+    options = OpenSettings,
 }
 
-SLASH_RXPWAYPOINTBRIDGE1 = "/rxpwb"
-SlashCmdList.RXPWAYPOINTBRIDGE = function(input)
-    local command, argument = (input or ""):lower():match("^%s*(%S*)%s*(%S*)")
-    local handler = commands[command] or ns.PrintHelp
+SLASH_RESTEDXPWAYPOINT1 = "/rxpw"
+SlashCmdList.RESTEDXPWAYPOINT = function(input)
+    -- argument: the rest of the line (e.g. "all far" for /rxpw preview all far)
+    local command, argument = (input or ""):lower():match("^%s*(%S*)%s*(.-)%s*$")
+    local handler = commands[command] or RXPW.PrintHelp
     local ok, err = pcall(handler, argument ~= "" and argument or nil)
     if not ok then
-        ns.Print("Internal error: %s", tostring(err))
+        RXPW.Print("Internal error: %s", tostring(err))
     end
 end
 
@@ -396,6 +550,9 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
         if arg1 ~= addonName then return end
         self:UnregisterEvent("ADDON_LOADED")
         LoadSettings()
+        -- The settings page needs no dependency; it registers even if
+        -- RestedXP or Waypoint UI is missing.
+        if RXPW.SettingsPanel then RXPW.SettingsPanel.Initialize() end
         return
     end
 
@@ -403,21 +560,21 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
     self:UnregisterEvent("PLAYER_LOGIN")
 
     -- All non-load-on-demand addons are loaded by PLAYER_LOGIN.
-    local rxp = ns.RXP.GetStatus()
-    local wui = ns.WUI.GetStatus()
+    local rxp = RXPW.RXP.GetStatus()
+    local wui = RXPW.WUI.GetStatus()
 
-    ns.Print("v%s loaded (auto sync %s, strategy %s). Type /rxpwb for commands.",
-        ns.GetVersion() or "?", OnOff(ns.db.autoSync), ns.db.strategy)
+    RXPW.Print("v%s loaded (auto sync %s, strategy %s). Type /rxpw for commands.",
+        RXPW.GetVersion() or "?", OnOff(RXPW.db.autoSync), RXPW.db.strategy)
     if not rxp.loaded then
-        ns.PrintLine("RestedXP Guides (RXPGuides) is not loaded; sync is unavailable.")
+        RXPW.PrintLine("RestedXP Guides (RXPGuides) is not loaded; sync is unavailable.")
     elseif not rxp.arrowAvailable then
-        ns.PrintLine("RestedXP is loaded but its arrow data (RXPG_ARROW) was not found.")
+        RXPW.PrintLine("RestedXP is loaded but its arrow data (RXPG_ARROW) was not found.")
     end
     if not wui.loaded then
-        ns.PrintLine("Waypoint UI (WaypointUI) is not loaded; sync is unavailable.")
+        RXPW.PrintLine("Waypoint UI (WaypointUI) is not loaded; sync is unavailable.")
     elseif not wui.apiAvailable then
-        ns.PrintLine("Waypoint UI is loaded but WaypointUIAPI.Navigation was not found.")
+        RXPW.PrintLine("Waypoint UI is loaded but WaypointUIAPI.Navigation was not found.")
     end
 
-    ns.Sync.Initialize()
+    RXPW.Sync.Initialize()
 end)

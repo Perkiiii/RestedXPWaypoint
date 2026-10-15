@@ -1,11 +1,11 @@
--- RXP Waypoint Bridge
+-- RestedXP Waypoint
 -- NavigationResolver: decides whether RestedXP's current arrow target should
 -- be shown as a coordinate waypoint (Mode A) or as WoW's native supertracked
 -- quest (Mode B), and wraps the native supertracking calls.
 --
 -- Strategies
 --   coordinates   always Mode A.
---   hybrid        (v0.4, unchanged) only quest TURN-INS go native, using
+--   hybrid        only quest TURN-INS go native, using
 --                 Nav.FindTurnIn (radius = pass-through rule).
 --   native-first  (v0.5) turn-ins AND quest objectives (.complete) go native
 --                 when RestedXP's own structure ties the arrow waypoint to them,
@@ -62,8 +62,8 @@
 --      exists and is not measurably inconsistent with RestedXP's destination
 --      (Nav.VerifyNative, run by Sync).
 
-local _, ns = ...
-local Nav = ns.Nav
+local _, RXPW = ...
+local Nav = RXPW.Nav
 
 -- Native target verification
 --   RXP.GetDistanceToTarget: horizontal distance (yards) from the player to
@@ -105,8 +105,13 @@ local function IsWaypointElement(element)
     return element.arrow == true or element.tag == "goto" or element.tag == "waypoint"
 end
 
+-- RestedXP's guide window sets completed = true on EVERY text-only or
+-- text-less element it draws (GuideWindow.lua ~1316-1328: ">>" headers, "*"
+-- notes, .mob/.target, and every .goto), so "completed" alone does not mean
+-- done. Real progress: SetElementComplete sets completed AND skip, and a reached
+-- waypoint sets skip. So: skip, or completed on a real instruction.
 local function IsDone(element)
-    return element.completed or element.skip
+    return element.skip or (element.completed and not element.textOnly and element.text ~= nil) or false
 end
 
 local function IsTurnIn(element)
@@ -124,12 +129,19 @@ local function FindIndex(elements, element)
     end
 end
 
--- v0.4 hybrid analysis (unchanged). Returns candidate, reason.
+local function HasTravelInstruction(element)
+    return type(element.text) == "string" and element.text:find("[%a\128-\255]") ~= nil
+end
+
+-- Hybrid turn-in analysis. Returns candidate, reason.
 -- candidate = { kind = "turnin", questID, title, pendingTurnIns, via }.
 function Nav.FindTurnIn(element)
     if type(element) ~= "table" then return nil, "no RestedXP waypoint" end
     if element.tag ~= "goto" then
         return nil, "not a guide .goto waypoint"
+    end
+    if HasTravelInstruction(element) then
+        return nil, "explicit travel instruction on this waypoint"
     end
     if element.radius ~= nil or element.dynamic or element.lowPrio or element.generated then
         return nil, "intermediate route waypoint (pass-through point)"
@@ -137,7 +149,7 @@ function Nav.FindTurnIn(element)
 
     local parent = element.parent
     if type(parent) == "table" then
-        if IsTurnIn(parent) and not IsDone(parent) then
+        if RXPW.Label.LinkedBlock(element) and IsTurnIn(parent) then
             return { kind = "turnin", questID = parent.questId, title = parent.title, pendingTurnIns = 1, via = "linked turn-in" }
         end
         return nil, "waypoint is linked to a non-turn-in instruction"
@@ -190,7 +202,7 @@ local function DescribeInstruction(element)
         name = IsPlaceholder(element) and "+placeholder" or "+objective"
     end
     local text = type(element.text) == "string"
-        and (ns.Label.Clean(element.text) or element.text:gsub("|", "/"):sub(1, 40)) or nil
+        and (RXPW.Label.Clean(element.text) or element.text:gsub("|", "/"):sub(1, 40)) or nil
     if text and not element.tag then
         return format("%s \"%s\"", name, text)
     end
@@ -349,7 +361,7 @@ end
 local function CircuitPoints(step)
     local points = {}
     for _, e in ipairs(step.elements) do
-        if type(e) == "table" and IsWaypointElement(e) and ns.IsFiniteNumber(e.wx) and ns.IsFiniteNumber(e.wy) then
+        if type(e) == "table" and IsWaypointElement(e) and RXPW.IsFiniteNumber(e.wx) and RXPW.IsFiniteNumber(e.wy) then
             points[#points + 1] = e
         end
     end
@@ -380,6 +392,45 @@ local function PendingWaypointCount(step)
         if type(e) == "table" and IsWaypointElement(e) and not IsDone(e) then count = count + 1 end
     end
     return count
+end
+
+--------------------------------------------------------------------------------
+-- Activity observation (v0.5.9, F7)
+--
+-- RestedXP can change what a waypoint is FOR without moving its arrow: a
+-- sticky step finishes, the player ticks an instruction off, a served step is
+-- skipped. RestedXP sends no message for manual or waypoint skips, and
+-- RXPFrame.activeSteps is one table rebuilt in place, so its identity says
+-- nothing. The signature is therefore built from content only: the index and
+-- active flag of the arrow's step and of every indexed active step, plus the
+-- IsDone state of each of their elements. IsDone ignores the guide window's
+-- draw-time completed flag, so redraws never change the signature. Cost: one
+-- pass over a handful of steps; Sync calls it once a second.
+--------------------------------------------------------------------------------
+
+local signatureParts, signatureBits = {}, {}
+
+local function AppendStepSignature(step, marker)
+    if type(step) ~= "table" or type(step.index) ~= "number" or type(step.elements) ~= "table" then return end
+    local count = 0
+    for i, e in ipairs(step.elements) do
+        signatureBits[i] = type(e) == "table" and (IsDone(e) and "1" or "0") or "-"
+        count = i
+    end
+    signatureParts[#signatureParts + 1] = format("%s%d%s:%s", marker, step.index, step.active and "" or "i",
+        concat(signatureBits, "", 1, count))
+end
+
+-- Compact string describing RestedXP's active guide state around the arrow
+-- element; equal strings mean nothing a navigation decision reads has changed.
+function Nav.GetActivitySignature(element)
+    for i = #signatureParts, 1, -1 do signatureParts[i] = nil end
+    AppendStepSignature(type(element) == "table" and element.step or nil, "a")
+    local active = GetActiveSteps()
+    if active then
+        for _, s in ipairs(active) do AppendStepSignature(s, "s") end
+    end
+    return concat(signatureParts, " ")
 end
 
 local ROUTE_CRITICAL = { ["travel instruction"] = true, ["route point"] = true }
@@ -414,7 +465,7 @@ function Nav.FindQuestTarget(element)
     -- Own text with letters is an explicit instruction ("Enter the crypt", or
     -- RestedXP's generated "Go to x,y"). Text without letters (">>1") is a
     -- placeholder authors use to suppress the generated text; not an instruction.
-    if type(element.text) == "string" and element.text:find("[%a\128-\255]") then
+    if HasTravelInstruction(element) then
         return result(nil, "explicit travel instruction on this waypoint", "travel instruction")
     end
 
@@ -425,14 +476,9 @@ function Nav.FindQuestTarget(element)
     if not index then return result(nil, "waypoint not found in its step", "other") end
 
     if type(element.parent) == "table" then
-        -- The block above the waypoint, back to the previous waypoint.
-        local first = index - 1
-        while first >= 1 do
-            local e = elements[first]
-            if type(e) == "table" and IsWaypointElement(e) then break end
-            first = first - 1
-        end
-        local candidate, reason = AnalyzeBlock(elements, first + 1, index - 1, "linked objective block")
+        local first, last = RXPW.Label.LinkedBlock(element)
+        if not first then return result(nil, "invalid linked objective in this step", "other") end
+        local candidate, reason = AnalyzeBlock(elements, first, last, "linked objective block")
         return result(candidate, reason, candidateRole(candidate, "other"))
     end
 
@@ -547,7 +593,7 @@ function Nav.GetQuestState(questID, withObjectives)
 end
 
 --------------------------------------------------------------------------------
--- On-demand inspection (/rxpwb inspect): what the resolver sees
+-- On-demand inspection (/rxpw inspect): what the resolver sees
 --------------------------------------------------------------------------------
 
 local MAX_INSPECT_ELEMENTS = 16
@@ -570,14 +616,14 @@ local function DescribeElement(e)
     local parts = {}
     if IsWaypointElement(e) then
         parts[#parts + 1] = format(".%s %s, %s", tostring(e.tag or "waypoint"),
-            ns.FormatCoord(e.x), ns.FormatCoord(e.y))
+            RXPW.FormatCoord(e.x), RXPW.FormatCoord(e.y))
         if e.radius then parts[#parts + 1] = "radius " .. tostring(e.radius) end
         if e.hidePin then parts[#parts + 1] = "optional" end
         if e.lowPrio then parts[#parts + 1] = "lowPrio" end
         if e.dynamic then parts[#parts + 1] = "dynamic" end
         if type(e.parent) == "table" then parts[#parts + 1] = "linked to " .. DescribeInstruction(e.parent) end
         if type(e.text) == "string" and e.text:find("%S") then
-            parts[#parts + 1] = format("travel text \"%s\"", tostring(ns.Label.Clean(e.text)))
+            parts[#parts + 1] = format("travel text \"%s\"", tostring(RXPW.Label.Clean(e.text)))
         end
     else
         parts[#parts + 1] = DescribeInstruction(e)
@@ -744,6 +790,16 @@ function Nav.GetSuperTrackedQuest()
     return nil
 end
 
+-- Snapshot for pending transitions, not an ownership claim about a quest ID.
+-- Priority also detects non-quest destinations taking control.
+function Nav.GetTrackingState()
+    local ST = type(C_SuperTrack) == "table" and C_SuperTrack or {}
+    local quest = Nav.GetSuperTrackedQuest()
+    local priority = Call(ST.GetHighestPrioritySuperTrackingType)
+    local empty = Call(ST.IsSuperTrackingAnything) == false or (quest == nil and priority == nil)
+    return quest, priority, empty
+end
+
 function Nav.SetNativeQuest(questID)
     if not Nav.IsNativeSupported() then return false end
     local ok = pcall(C_SuperTrack.SetSuperTrackedQuestID, questID)
@@ -799,7 +855,7 @@ function Nav.VerifyNative(target, questID, tolerance, references)
     if type(references) == "table" and #references > 1 then
         local count = 0
         for _, element in ipairs(references) do
-            local d = ns.RXP.GetDistanceToElement(element)
+            local d = RXPW.RXP.GetDistanceToElement(element)
             if d then
                 count = count + 1
                 local gap = abs(nativeDistance - d)
@@ -819,7 +875,7 @@ function Nav.VerifyNative(target, questID, tolerance, references)
         end
     end
 
-    local rxpDistance = ns.RXP.GetDistanceToTarget(target)
+    local rxpDistance = RXPW.RXP.GetDistanceToTarget(target)
     if rxpDistance then
         m.rxp = rxpDistance
         m.gap = abs(nativeDistance - rxpDistance)
@@ -829,6 +885,49 @@ function Nav.VerifyNative(target, questID, tolerance, references)
         return true, format("native %.0f yd vs RestedXP %.0f yd (gap %.0f, limit %d)", nativeDistance, rxpDistance, m.gap, tolerance), m
     end
     return true, format("native target at %.0f yd (RestedXP distance unknown)", nativeDistance), m
+end
+
+--------------------------------------------------------------------------------
+-- Native activity area (v0.5.9, F8)
+--
+-- The native id ("objective:Q") says WHAT is tracked; it deliberately stays the
+-- same while RestedXP cycles #loop points or progress changes, so the quest is
+-- never re-supertracked. The activity says WHERE RestedXP is leading for it:
+-- the objectives, the arrow's step and the steps holding the quest work, and
+-- for a #loop circuit or patrol the circuit itself. Sync re-verifies (without
+-- re-supertracking) when the activity changes, or when a non-circuit
+-- destination moves further than the verification tolerance from the point the
+-- native target was last verified against. The anchor is a value copy of the
+-- arrow element's world position; no RestedXP table is retained.
+--------------------------------------------------------------------------------
+
+local function StepIndexes(steps)
+    local list = {}
+    for step in pairs(steps or {}) do
+        if type(step) == "table" and type(step.index) == "number" then list[#list + 1] = step.index end
+    end
+    sort(list)
+    return concat(list, ",")
+end
+
+local function Activity(nativeId, objectives, steps, stepIndex, circuit)
+    return format("%s|obj %s|step %s|work %s%s", tostring(nativeId), concat(objectives or {}, ","),
+        tostring(stepIndex or "-"), StepIndexes(steps), circuit and "|circuit" or "")
+end
+
+local function Anchor(element)
+    if type(element) ~= "table" or not (RXPW.IsFiniteNumber(element.wx) and RXPW.IsFiniteNumber(element.wy)) then
+        return nil
+    end
+    return { x = element.wx, y = element.wy, instance = element.instance }
+end
+
+-- Distance in yards between two anchors (HereBeDragons world coordinates are
+-- yards); math.huge on different continents or when unknown.
+function Nav.AnchorDistance(a, b)
+    if not (a and b) or a.instance ~= b.instance then return math.huge end
+    local dx, dy = a.x - b.x, a.y - b.y
+    return math.sqrt(dx * dx + dy * dy)
 end
 
 --------------------------------------------------------------------------------
@@ -852,7 +951,7 @@ end
 
 local function IsPriorityLine(element)
     if element.tag ~= nil or not element.textOnly or type(element.text) ~= "string" then return nil end
-    local text = ns.Label.Clean(element.text)
+    local text = RXPW.Label.Clean(element.text)
     if text and text:lower():find("^prioriti[sz]e") then return text end
     return nil
 end
@@ -905,7 +1004,7 @@ end
 -- Returns selected entry (or nil), selection reason, list of all entries.
 -- entry = { questID, title, objectives, steps, eligible, reason, classification,
 --           progress, questState, blocked, selected }
-local function SelectQuest(candidate, context)
+local function SelectQuest(candidate, context, stepIndex)
     context = context or {}
     local list, eligible = {}, {}
     for _, info in ipairs(candidate.quests) do
@@ -916,8 +1015,10 @@ local function SelectQuest(candidate, context)
             steps = info.steps, firstPos = info.firstPos, eligible = ok, reason = reason,
             classification = classification, progress = progress, questState = qs,
         }
+        local id = "objective:" .. tostring(info.questID)
+        entry.activity = Activity(id, info.objectives, info.steps, stepIndex, candidate.references ~= nil)
         if ok and context.blockedReason then
-            local blocked = context.blockedReason("objective:" .. tostring(info.questID), progress)
+            local blocked = context.blockedReason(id, progress, entry.activity)
             if blocked then
                 entry.eligible = false
                 entry.blocked = true
@@ -976,6 +1077,294 @@ local function SelectQuest(candidate, context)
     local first = eligible[1]
     local index = MinStepIndex(first)
     return pick(first, format("first in RestedXP's guide order (step %s)", index == math.huge and "?" or tostring(index)))
+end
+
+--------------------------------------------------------------------------------
+-- Marker presentation for coordinate waypoints (v0.5.5)
+--
+-- Waypoint UI picks the native quest marker icon from the quest's state
+-- (Available / Incomplete / Complete) and type (Waypoint_ContextIcon.lua:
+-- C_QuestInfoSystem.GetQuestClassification, C_QuestLog.GetQuestType,
+-- C_QuestLog.IsRepeatableQuest). When the bridge follows a RestedXP
+-- coordinate for a quest step, the same state and type are resolved here so
+-- the custom marker can carry the icon the native marker would show
+-- (WUI.GetQuestIcon). Presentation only: never changes navigation.
+--------------------------------------------------------------------------------
+
+-- Quest types Waypoint UI ships icons for (Art\Icons\<State><Type>Quest).
+local ICON_TYPES = { Important = true, Campaign = true, Legendary = true, Calling = true,
+                     Meta = true, Recurring = true, Repeatable = true }
+
+-- Type part of Waypoint UI's quest icon name ("" for a normal quest).
+function Nav.GetQuestIconType(questID)
+    local QC = Enum and Enum.QuestClassification
+    local QIS = type(C_QuestInfoSystem) == "table" and C_QuestInfoSystem or {}
+    local QL = type(C_QuestLog) == "table" and C_QuestLog or {}
+    local classification = Call(QIS.GetQuestClassification, questID)
+    local questType = Call(QL.GetQuestType, questID)
+    local key
+    if QC and classification ~= nil then
+        if classification == QC.Important then key = "Important"
+        elseif classification == QC.Campaign then key = "Campaign"
+        elseif classification == QC.Legendary then key = "Legendary"
+        elseif classification == QC.Calling then key = "Calling"
+        elseif classification == QC.Meta then key = "Meta"
+        elseif classification == QC.Recurring then key = "Recurring"
+        end
+    end
+    if not key and Enum and Enum.QuestTag and questType ~= nil and questType == Enum.QuestTag.Legendary then
+        key = "Legendary"
+    end
+    if not key and (not QC or classification ~= QC.Normal) and Call(QL.IsRepeatableQuest, questID) then
+        key = "Repeatable"
+    end
+    return ICON_TYPES[key] and key or ""
+end
+
+-- First pending actionable instruction of the associated waypoint block.
+-- Returns kind ("accept" / "turnin" / "objective"), questID; nil otherwise
+-- (a step that starts with a non-quest action gets no quest presentation).
+local function StepActivity(step, first, last)
+    for i = first, last do
+        local e = step.elements[i]
+        if type(e) == "table" and not IsWaypointElement(e) and not IsDone(e) and not e.textOnly
+            and not IsPlaceholder(e) then
+            if e.tag == "accept" and type(e.questId) == "number" and e.questId > 0 then return "accept", e.questId end
+            if IsTurnIn(e) then return "turnin", e.questId end
+            if IsObjective(e) then return "objective", e.questId end
+            return nil
+        end
+    end
+    return nil
+end
+
+-- Waypoint UI's marker colour for a quest state (DataProviderUtil.GetTrackingType
+-- + Waypoint.GetTintColorInfo): incomplete -> IncompleteQuest; complete ->
+-- RepeatableQuest (Recurring/Meta/Calling), ImportantQuest (Important) or
+-- NormalQuest. Available quests are not tracked natively, so they keep
+-- Waypoint UI's "Other" colour (nil here = no explicit colour).
+local function TintKey(questID, status)
+    if status == "Incomplete" then return "IncompleteQuest" end
+    if status ~= "Complete" then return nil end
+    local QC = Enum and Enum.QuestClassification
+    local QIS = type(C_QuestInfoSystem) == "table" and C_QuestInfoSystem or {}
+    local classification = Call(QIS.GetQuestClassification, questID)
+    if QC and classification ~= nil then
+        if classification == QC.Recurring or classification == QC.Meta or classification == QC.Calling then
+            return "RepeatableQuest"
+        elseif classification == QC.Important then
+            return "ImportantQuest"
+        end
+    end
+    return "NormalQuest"
+end
+
+-- Service steps (v0.5.6): flight master, innkeeper, stable master, trainers,
+-- food and drink, repair.
+-- Detected from RestedXP's structured tags in the waypoint's step:
+--   .fp / .fly                      -> FlightMaster
+--   .home (set hearthstone)         -> Innkeeper
+--   .stable                         -> StableMaster
+--   .trainer / .train  + .skill     -> ProfessionTrainer (".skill <profession>" gates the step)
+--   .trainer / .train  (no .skill)  -> ClassTrainer (also pet/weapon trainers)
+--     (a step with .use is learning from an item, e.g. "Mining for Dummies": no icon)
+--   .vendor + .collect of a food & drink item -> FoodAndDrink
+--     (item class from GetItemInfoInstant: Consumable / Food & Drink)
+--   .vendor whose text mentions "repair"      -> Repair
+--     (RestedXP has no repair tag; English guide text, like "Prioritize")
+--   any other .vendor (sell junk / restock)   -> Vendor
+--   .bankdeposit / .bankwithdraw              -> Banker
+--   .xp grind target (not a skip-step / "<" condition) -> Grind
+-- v0.6.1: resolve only the current waypoint's instruction block. A .train
+-- condition is not a visit to a trainer, and .collect needs purchase evidence.
+local function GetItemInfoInstantSafe(itemID)
+    local fn = (type(C_Item) == "table" and C_Item.GetItemInfoInstant) or _G.GetItemInfoInstant
+    if type(fn) ~= "function" then return nil end
+    local ok, _, _, _, _, _, classID, subclassID = pcall(fn, itemID)
+    if ok then return classID, subclassID end
+    return nil
+end
+
+function Nav.IsFoodOrDrink(itemID)
+    if type(itemID) ~= "number" then return false end
+    local classID, subclassID = GetItemInfoInstantSafe(itemID)
+    local consumable = Enum and Enum.ItemClass and Enum.ItemClass.Consumable or 0
+    local foodDrink = Enum and Enum.ItemConsumableSubclass and Enum.ItemConsumableSubclass.Fooddrink or 5
+    return classID == consumable and subclassID == foodDrink
+end
+
+local function StepHasTag(step, tag)
+    for _, e in ipairs(step.elements) do
+        if type(e) == "table" and e.tag == tag and not IsDone(e) then return true end
+    end
+    return false
+end
+
+local function ServiceText(text)
+    local clean = RXPW.Label.Clean(text)
+    return clean and clean:lower() or ""
+end
+
+local function IsPurchaseText(text)
+    return ServiceText(text):find("^buy%f[%W]") ~= nil
+end
+
+local function IsTraining(e)
+    -- functions.train: bit 1 = text-only condition, bit 2 = reverse condition.
+    local flags = type(e.flags) == "number" and e.flags or 0
+    return not e.textOnly and not e.reverse and flags % 4 == 0
+end
+
+local SERVICE_TAGS = { fp = true, fly = true, home = true, stable = true,
+    bankdeposit = true, bankwithdraw = true, vendor = true,
+    buy = true, buyAll = true, buyUntilBroke = true }
+
+-- No crossing an instruction-bearing waypoint boundary. Consecutive route
+-- points may share the block at their end, as they do in the label resolver.
+local function ServiceBlock(element, step)
+    local elements = step.elements
+    local index = FindIndex(elements, element)
+    if not index then return nil end
+    local last, hasAction = #elements, false
+    for i = index + 1, #elements do
+        local e = elements[i]
+        if type(e) == "table" then
+            if IsWaypointElement(e) then
+                if hasAction then last = i - 1; break end
+            elseif SERVICE_TAGS[e.tag] or ((e.tag == "train" or e.tag == "trainer") and IsTraining(e))
+                or (not e.textOnly and (e.text ~= nil or e.tag == "collect")) then
+                -- Count completed instructions too: they still define a boundary.
+                hasAction = true
+            end
+        end
+    end
+    if hasAction then return index + 1, last, "following instruction" end
+    if type(element.parent) == "table" then
+        local first, linkedLast = RXPW.Label.LinkedBlock(element)
+        return first, linkedLast, "linked instruction"
+    end
+    -- Some guides put service instructions before their first/only waypoint.
+    for i = 1, index - 1 do
+        local e = elements[i]
+        if type(e) == "table" and IsWaypointElement(e) then return nil end
+    end
+    return 1, last, "waypoint instruction block"
+end
+
+-- Returns service key, source and structural association. Never uses the
+-- selected display label as evidence (it may be a title or a fallback).
+local function StepService(step, element)
+    if not step.active or type(step.elements) ~= "table" or type(element) ~= "table"
+        or IsDone(element) then return nil end
+    local first, last, association = ServiceBlock(element, step)
+    if not first then return nil end
+    local block = { elements = {} }
+    for i = first, last do block.elements[#block.elements + 1] = step.elements[i] end
+    -- Prefix conditions (e.g. .skill before the first .goto) apply here too.
+    local prefix = {}
+    for _, e in ipairs(step.elements) do
+        if type(e) == "table" and IsWaypointElement(e) then
+            if e == element then
+                for _, qualifier in ipairs(prefix) do block.elements[#block.elements + 1] = qualifier end
+            end
+            break
+        end
+        if type(e) == "table" and (e.tag == "skill" or e.tag == "use") then
+            prefix[#prefix + 1] = e
+        end
+    end
+    local heading
+    local function result(service, source)
+        return service, source, association
+    end
+    for _, e in ipairs(block.elements) do
+        if type(e) == "table" and IsDone(e) and (not e.textOnly or SERVICE_TAGS[e.tag]) then
+            heading = nil
+        end
+        if type(e) == "table" and not IsDone(e) and not IsWaypointElement(e) then
+            local tag = e.tag
+            if tag == "fp" or tag == "fly" then
+                return result("FlightMaster", "." .. tag)
+            elseif tag == "home" then
+                return result("Innkeeper", ".home")
+            elseif tag == "stable" then
+                return result("StableMaster", ".stable")
+            elseif tag == "bankdeposit" or tag == "bankwithdraw" then
+                return result("Banker", "." .. tag)
+            elseif tag == "xp" and not e.textOnly and not e.reverseLogic then
+                -- ".xp 2 >> Grind to level 2"; ".xp <6,1" (skip-step / reverse) are conditions
+                return result("Grind", ".xp")
+            elseif (tag == "trainer" or tag == "train") and IsTraining(e) then
+                if not StepHasTag(block, "use") then
+                    if StepHasTag(block, "skill") then return result("ProfessionTrainer", "." .. tag .. " + .skill") end
+                    return result("ClassTrainer", "." .. tag)
+                end
+                return nil
+            elseif tag == "vendor" then
+                for _, c in ipairs(block.elements) do
+                    if type(c) == "table" and c.tag == "collect" and not IsDone(c) and Nav.IsFoodOrDrink(c.id) then
+                        return result("FoodAndDrink", ".vendor + food/drink .collect")
+                    end
+                end
+                if ServiceText(e.text):find("%f[%a]repair%f[%A]") then return result("Repair", ".vendor (repair)") end
+                return result("Vendor", ".vendor")
+            elseif tag == "buy" or tag == "buyAll" or tag == "buyUntilBroke"
+                or (tag == "collect" and (IsPurchaseText(e.text)
+                    or (ServiceText(e.text) == "" and IsPurchaseText(heading)))) then
+                return result(Nav.IsFoodOrDrink(e.id) and "FoodAndDrink" or "Vendor", "." .. tag .. " (purchase)")
+            elseif not tag and e.textOnly and not e.hideTooltip then
+                heading = e.text
+            elseif not e.textOnly and (e.text ~= nil or tag == "collect") then
+                -- An unrecognised active action is not permission to search for
+                -- a more attractive service later in the step.
+                return nil
+            end
+        end
+    end
+    return nil
+end
+Nav.StepService = StepService
+
+-- Returns { questID, status = "Available"|"Incomplete"|"Complete", iconType, tintKey, source },
+-- or { service = "FlightMaster"|"ClassTrainer"|..., source } for a service step, or nil.
+-- Uses the decision's quest context when it has one (structural association,
+-- v0.5.4), else the waypoint's own step activity (the quest work the step is
+-- leading to, e.g. a collection route before "Click on the Crystals").
+function Nav.GetPresentation(target, decision)
+    local c = decision and decision.context
+    if c then
+        local status = c.ready and "Complete" or "Incomplete"
+        return { questID = c.questID, status = status, iconType = Nav.GetQuestIconType(c.questID),
+                 tintKey = TintKey(c.questID, status), source = tostring(c.source), kind = c.kind }
+    end
+    local element = target and target.element
+    local step = type(element) == "table" and type(element.step) == "table" and element.step or nil
+    if not step or type(step.elements) ~= "table" then return nil end
+    -- The step can contain several destinations. An earlier quest acceptance
+    -- must not lend its icon to a later vendor/trainer visit (or vice versa).
+    -- Keep explicit quest context above authoritative; scope only the fallback.
+    local first, last = ServiceBlock(element, step)
+    if not first then return nil end
+    local kind, questID = StepActivity(step, first, last)
+    if not kind then
+        local service, source, association = StepService(step, element)
+        if service then
+            return { service = service, source = format("step %s %s", tostring(step.index or "?"), source),
+                     serviceSource = association .. " " .. source }
+        end
+        return nil
+    end
+    local qs = Nav.GetQuestState(questID)
+    local status
+    if qs.inLog then
+        status = qs.ready and "Complete" or "Incomplete"
+    elseif kind == "accept" then
+        status = "Available"
+    end
+    if not status then return nil end
+    return { questID = questID, status = status, iconType = Nav.GetQuestIconType(questID),
+             tintKey = TintKey(questID, status), source = format("step %s %s", tostring(step.index or "?"), kind),
+             kind = kind, title = qs.title }
 end
 
 -- Quest context: what the player is working on, independent of how they are
@@ -1040,6 +1429,8 @@ local function DecideHelper(decision, target, helper, context)
     decision.classification = "turn-in"
     decision.tolerance = Nav.TURNIN_TOLERANCE
     decision.nativeId = format("turnin:%s", tostring(q))
+    decision.activity = format("%s|helper step %s", decision.nativeId, tostring(helper.step.index))
+    decision.anchor = Anchor(target.element)
     decision.nativeEligible = true
     decision.reason = format("native continuity: helper step %s leads to the same turn-in (quest %d, step %s)",
         tostring(helper.step.index), q, tostring(helper.anchor.index))
@@ -1059,13 +1450,17 @@ end
 --   candidates      (shared circuit only) every candidate quest with its state
 --   selection       (shared circuit only) why the selected quest won
 --   nativeId        identity of the native state (Sync compares it)
+--   activity        (v0.5.9) native id + where RestedXP leads for it; a change
+--                   means re-verify the unchanged native quest (see Activity)
+--   anchor          (v0.5.9) { x, y, instance } copy of the arrow's world
+--                   position outside circuits, for the moved-destination check
 --   tolerance       verification tolerance for this kind
 --   references      circuit points for verification (#loop / patrol)
 --   analysis        "hybrid" or "native-first" (which resolver produced it)
 --   role, routeCritical   (native-first) what the waypoint is, see FindQuestTarget
 --   context         (native-first) quest context for coordinate labels: { questID, title, kind, ready, source }
 --   continuity      (helper waypoints) { ok, detail } of the native continuity check
--- context (optional, from Sync): { currentQuest, currentKind, pending, blockedReason(nativeId, progress) }
+-- context (optional, from Sync): { currentQuest, currentKind, pending, blockedReason(nativeId, progress, activity) }
 function Nav.Decide(target, strategy, context)
     local useHybrid = strategy == "hybrid"
     local decision = { mode = "coordinates", nativeEligible = false,
@@ -1092,7 +1487,7 @@ function Nav.Decide(target, strategy, context)
         if not Nav.IsNativeSupported() then
             decision.reason = "native quest supertracking is not available in this client"
         else
-            local selected, selection, list = SelectQuest(candidate, context)
+            local selected, selection, list = SelectQuest(candidate, context, target.stepIndex)
             decision.candidates = list
             decision.selection = selection
             if not selected then
@@ -1104,6 +1499,7 @@ function Nav.Decide(target, strategy, context)
                 decision.objectives = selected.objectives
                 decision.progress = selected.progress
                 decision.classification = selected.classification or "objective"
+                decision.activity = selected.activity
                 decision.nativeEligible = true
                 decision.reason = format("quest objective eligible (%s); selected quest %d: %s",
                     candidate.via, selected.questID, selection)
@@ -1158,16 +1554,23 @@ function Nav.Decide(target, strategy, context)
             -- RestedXP cycling #loop points does not re-supertrack the quest.
             decision.nativeId = format("%s:%s", candidate.kind, tostring(q))
         end
+        decision.activity = useHybrid and decision.nativeId
+            or Activity(decision.nativeId, candidate.objectives, candidate.steps, target.stepIndex,
+                candidate.references ~= nil)
 
         -- A native target that recently failed verification is not retried
         -- until Sync's retry conditions are met.
         if decision.nativeEligible and context and context.blockedReason then
-            local blocked = context.blockedReason(decision.nativeId, decision.progress)
+            local blocked = context.blockedReason(decision.nativeId, decision.progress, decision.activity)
             if blocked then
                 decision.nativeEligible = false
                 decision.reason = "native target failed verification recently: " .. blocked
             end
         end
+    end
+
+    if decision.activity and not decision.anchor and not (decision.references and #decision.references > 1) then
+        decision.anchor = Anchor(target.element)
     end
 
     if not decision.context and decision.questID and not useHybrid then
@@ -1183,4 +1586,16 @@ function Nav.Decide(target, strategy, context)
         end
     end
     return decision
+end
+
+-- Quest context for presentation, whatever the navigation strategy (v0.5.6).
+-- Where the waypoint is comes from RestedXP and the decision; which quest it
+-- belongs to (icon, colour, fallback label) uses the native-first structural
+-- analysis in every mode. The hybrid resolver does not build context, so in
+-- hybrid the analysis is repeated with the coordinates strategy, which never
+-- selects native mode and is given no Sync context (no continuity check, no
+-- retry bookkeeping): it only describes the waypoint.
+function Nav.GetContextDecision(target, decision)
+    if decision and decision.analysis == "native-first" then return decision end
+    return Nav.Decide(target, "coordinates")
 end

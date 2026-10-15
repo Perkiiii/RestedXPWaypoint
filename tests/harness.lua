@@ -17,36 +17,165 @@ local now = 0
 function GetTime() return now end
 function wipe(t) for k in pairs(t) do t[k] = nil end return t end
 Enum = { SuperTrackingType = { Quest = 0, UserWaypoint = 1 } }
-local timers, ticker = {}, nil
+local timers, tickers = {}, {}
 C_Timer = {
   After = function(d, fn) table.insert(timers, { at = now + d, fn = fn }) end,
-  NewTicker = function(i, fn) ticker = { i = i, fn = fn, next = now + i, Cancel = function() ticker = nil end }; return ticker end,
+  NewTicker = function(i, fn)
+    local ticker = { i = i, fn = fn, next = now + i }
+    function ticker:Cancel() self.cancelled = true end
+    table.insert(tickers, ticker)
+    return ticker
+  end,
 }
+-- Widget mock (v0.6.0 settings page): enough state to build and drive the
+-- panel offline (sizes, shown state, scripts, text, textures, slider/scroll
+-- values). Unknown methods are no-ops; this proves no rendering or layout.
 local frames = {}
-function CreateFrame()
-  local f = { events = {} }
-  function f:RegisterEvent(e) self.events[e] = true end
-  function f:UnregisterEvent(e) self.events[e] = nil end
-  function f:SetScript(_, fn) self.onEvent = fn end
+local Widget = {}
+local function newWidget(kind, parent)
+  local w = setmetatable({ kind = kind, shown = true, width = 0, height = 0, alpha = 1, enabled = true,
+    scripts = {}, hooks = {}, points = {}, children = {}, regions = {}, parent = parent, level = 1 }, Widget)
+  if parent and parent.children then table.insert(parent.children, w); w.level = (parent.level or 0) + 1 end
+  return w
+end
+Widget.__index = Widget
+-- Methods whose effect the tests do not observe.
+for _, name in ipairs({ "SetFontObject", "SetJustifyH", "SetJustifyV", "SetWordWrap", "SetFont", "SetShadowOffset",
+  "SetShadowColor", "SetRotation", "SetFrameStrata", "SetToplevel", "EnableMouse", "EnableMouseWheel",
+  "SetOrientation", "SetThumbTexture", "SetValueStep", "SetObeyStepOnDrag", "SetClipsChildren", "SetOwner",
+  "AddLine", "SetDrawLayer", "SetBlendMode" }) do
+  Widget[name] = function() end
+end
+function Widget:SetSize(w, h) self.width, self.height = w, h end
+function Widget:SetWidth(w) self.width = w; if self.scripts.OnSizeChanged then self.scripts.OnSizeChanged(self, w, self.height) end end
+function Widget:SetHeight(h) self.height = h end
+function Widget:GetWidth() return self.width end
+function Widget:GetHeight() return self.height end
+function Widget:SetPoint(...) table.insert(self.points, { ... }) end
+function Widget:ClearAllPoints() self.points = {} end
+function Widget:SetAllPoints(other) self.points = { { "ALL", other } }; if other and other.width then self.width, self.height = other.width, other.height end end
+function Widget:SetParent(p) self.parent = p end
+function Widget:GetParent() return self.parent end
+function Widget:IsShown() return self.shown end
+function Widget:IsVisible()
+  local w = self
+  while w do if not w.shown then return false end; w = w.parent end
+  return true
+end
+function Widget:Show() if not self.shown then self.shown = true; if self.scripts.OnShow then self.scripts.OnShow(self) end end end
+function Widget:Hide() if self.shown then self.shown = false; if self.scripts.OnHide then self.scripts.OnHide(self) end end end
+function Widget:SetShown(v) if v then self:Show() else self:Hide() end end
+function Widget:SetAlpha(a) self.alpha = a end
+function Widget:GetAlpha() return self.alpha end
+function Widget:SetEnabled(v) self.enabled = v and true or false end
+function Widget:Enable() self.enabled = true end
+function Widget:Disable() self.enabled = false end
+function Widget:IsEnabled() return self.enabled end
+function Widget:SetScript(name, fn) self.scripts[name] = fn; if name == "OnEvent" then self.onEvent = fn end end
+function Widget:GetScript(name) return self.scripts[name] end
+function Widget:HookScript(name, fn)
+  local old = self.scripts[name]
+  self.scripts[name] = function(...) if old then old(...) end fn(...) end
+end
+function Widget:RegisterEvent(e) self.events = self.events or {}; self.events[e] = true end
+function Widget:UnregisterEvent(e) if self.events then self.events[e] = nil end end
+function Widget:IsMouseOver() return self.mouseOver or false end
+function Widget:GetFrameLevel() return self.level end
+function Widget:SetFrameLevel(l) self.level = l end
+function Widget:CreateTexture() local t = newWidget("Texture", self); table.insert(self.regions, t); return t end
+function Widget:CreateFontString() local t = newWidget("FontString", self); table.insert(self.regions, t); return t end
+function Widget:SetTexture(path) self.texture = path end
+function Widget:GetTexture() return self.texture end
+function Widget:SetColorTexture(r, g, b, a) self.color = { r, g, b, a } end
+function Widget:SetVertexColor(r, g, b) self.vertex = { r, g, b } end
+function Widget:SetText(t) self.text = t end
+function Widget:GetText() return self.text end
+function Widget:SetTextColor(r, g, b, a) self.textColor = { r, g, b, a } end
+function Widget:GetStringWidth() return #(tostring(self.text or "")) * 6 end
+function Widget:GetStringHeight()
+  local width = self.width > 0 and self.width or 300
+  return math.max(1, math.ceil(#(tostring(self.text or "")) * 6 / width)) * 13
+end
+function Widget:SetMinMaxValues(lo, hi) self.min, self.max = lo, hi end
+function Widget:GetMinMaxValues() return self.min or 0, self.max or 0 end
+function Widget:SetValue(v)
+  v = math.max(self.min or 0, math.min(self.max or v, v))
+  if v ~= self.value then self.value = v; if self.scripts.OnValueChanged then self.scripts.OnValueChanged(self, v) end end
+end
+function Widget:GetValue() return self.value or 0 end
+function Widget:SetScrollChild(c) self.scrollChild = c end
+function Widget:SetVerticalScroll(v) self.scroll = v end
+function Widget:GetVerticalScroll() return self.scroll or 0 end
+function Widget:Click() if self.enabled and self.scripts.OnClick then self.scripts.OnClick(self, "LeftButton") end end
+function CreateFrame(kind, _, parent)
+  local f = newWidget(kind or "Frame", parent)
+  f.events = {}
   table.insert(frames, f); return f
 end
+function CreateFont(name)
+  local font = setmetatable({ name = name }, Widget)
+  _G[name] = font
+  return font
+end
+GameFontNormal = setmetatable({ GetFont = function() return "Fonts\\FRIZQT__.TTF", 12, "" end }, Widget)
+GameFontHighlight = setmetatable({}, Widget)
+GameTooltip = setmetatable({ shown = false, width = 0, height = 0, scripts = {}, points = {}, children = {}, regions = {} }, Widget)
+-- Settings API (modern client): one entry per registered category.
+H.settings = { categories = {}, addOnCategories = {}, opened = {} }
+Settings = {
+  RegisterCanvasLayoutCategory = function(frame, name)
+    local category = { frame = frame, name = name, id = 1000 + #H.settings.categories }
+    function category:GetID() return self.id end
+    table.insert(H.settings.categories, category)
+    return category
+  end,
+  RegisterAddOnCategory = function(category) table.insert(H.settings.addOnCategories, category) end,
+  OpenToCategory = function(id)
+    table.insert(H.settings.opened, id)
+    for _, c in ipairs(H.settings.categories) do
+      if c.id == id then c.frame.width, c.frame.height = 640, 520; c.frame:Show() end
+    end
+  end,
+}
+SettingsPanel = nil
+-- StaticPopup: the last shown dialog; tests accept or cancel it.
+StaticPopupDialogs = {}
+H.popups = {}
+function StaticPopup_Show(name) table.insert(H.popups, name); return StaticPopupDialogs[name] end
+function H.acceptPopup(name) local d = StaticPopupDialogs[name]; if d and d.OnAccept then d.OnAccept() end end
+function InCombatLockdown() return H.inCombat or false end
 function H.fire(event, ...) for _, f in ipairs(frames) do if f.events[event] and f.onEvent then f.onEvent(f, event, ...) end end end
 H.chat = {}
 DEFAULT_CHAT_FRAME = { AddMessage = function(_, m) table.insert(H.chat, m) end }
 SlashCmdList = {}
-H.versions = { RXPWaypointBridge = "0.5.4", WaypointUI = "1.7.3" }
+H.versions = { RestedXPWaypoint = "0.6.1", WaypointUI = "1.7.3" }
 C_AddOns = { IsAddOnLoaded = function() return true end, GetAddOnMetadata = function(a) return H.versions[a] or "x" end }
 C_Map = { GetMapInfo = function(id) return { name = "Map" .. id } end, CanSetUserWaypointOnMap = function() return true end }
 
 local st = { quest = nil, user = false, setQuestCalls = 0 }
 H.st = st
+H.operations = {}
+local writer = "bridge"
+local function record(kind, value)
+  table.insert(H.operations, { time = now, writer = writer, kind = kind, value = value })
+end
 C_SuperTrack = {
-  SetSuperTrackedQuestID = function(q) if q == 0 then st.releaseCalls = (st.releaseCalls or 0) + 1; st.quest = nil else st.setQuestCalls = st.setQuestCalls + 1; st.quest = q; st.user = false end end,
+  SetSuperTrackedQuestID = function(q)
+    record("quest", q)
+    if q == 0 then st.releaseCalls = (st.releaseCalls or 0) + 1; st.quest = nil
+    else st.setQuestCalls = st.setQuestCalls + 1; st.quest = q; st.user = false end
+    H.fire("SUPER_TRACKING_CHANGED")
+  end,
   GetSuperTrackedQuestID = function() return st.quest or 0 end,
-  SetSuperTrackedUserWaypoint = function(v) st.user = v; if v then st.quest = nil end end,
+  SetSuperTrackedUserWaypoint = function(v)
+    st.user = v; if v then st.quest = nil end
+    H.fire("SUPER_TRACKING_CHANGED")
+  end,
   GetHighestPrioritySuperTrackingType = function() if st.quest then return 0 elseif st.user then return 1 end end,
-  ClearAllSuperTracked = function() st.quest = nil; st.user = false end,
+  IsSuperTrackingAnything = function() return st.quest ~= nil or st.user end,
+  ClearAllSuperTracked = function() st.quest = nil; st.user = false; H.fire("SUPER_TRACKING_CHANGED") end,
 }
+C_Map.GetUserWaypoint = function() return st.waypoint end
 -- quests[id] = { title, ready, poi = native distance (yd) or nil, objectives = { {type, finished, numFulfilled, numRequired}, ... } }
 local quests = {}
 H.quests = quests
@@ -65,35 +194,110 @@ C_Navigation = { GetDistance = function()
 -- HereBeDragons: player at (0,0); an element's world position is (wx, wy) in yards.
 local HBD = { GetPlayerWorldPosition = function() return 0, 0, 0 end,
   GetWorldDistance = function(_, i, x1, y1, x2, y2) return math.sqrt((x2-x1)^2 + (y2-y1)^2) end }
-LibStub = setmetatable({}, { __call = function(_, name) if name == "HereBeDragons-2.0" then return HBD end end })
+-- AceAddon-3.0 registry: RestedXP's addon object (settings.profile, arrowFrame,
+-- DrawArrow, UpdateMap) is created with the RestedXP mocks below.
+H.aceAddons = {}
+local AceAddon = { GetAddon = function(_, name) return H.aceAddons[name] end }
+LibStub = setmetatable({}, { __call = function(_, name)
+  if name == "HereBeDragons-2.0" then return HBD end
+  if name == "AceAddon-3.0" then return AceAddon end
+end })
 
 ----------------------------------------------------------------------- Waypoint UI
-local wui = { nav = nil, writes = 0, clears = 0 }
+-- Waypoint UI 1.7.3 side effects modelled for Stage 4 (MapPin.NewUserNavigation):
+-- every call, renames included, resets the in-world marker (markerResets);
+-- with wui.pathfinding the path is rebuilt (pathBuilds) and the native waypoint
+-- becomes a path-step waypoint (IsPathStepWaypointTracked). Counters only: no
+-- rendering, timing or FPS is modelled.
+local wui = { nav = nil, writes = 0, clears = 0, markerResets = 0, pathBuilds = 0 }
 H.wui = wui
 WaypointUIAPI = { Navigation = {
   NewUserNavigation = function(o)
     wui.writes = wui.writes + 1
+    record("navigation", { name = o.name, flags = o.flags, mapID = o.mapID, x = o.x, y = o.y })
+    if wui.rejects and wui.rejects > 0 then wui.rejects = wui.rejects - 1; return nil end
+    if wui.errors and wui.errors > 0 then wui.errors = wui.errors - 1; error("temporary failure") end
     wui.nav = { name = o.name, mapID = o.mapID, x = o.x / 100, y = o.y / 100, flags = o.flags, stripCoordinates = o.stripCoordinates,
-      iconTexture = o.iconTexture, iconType = o.iconType }
-    C_SuperTrack.SetSuperTrackedUserWaypoint(true); return wui.nav end,
+      iconTexture = o.iconTexture, iconType = o.iconType, r = o.r, g = o.g, b = o.b, suppressAudio = o.suppressAudio }
+    if not o.suppressAudio then wui.audible = (wui.audible or 0) + 1 end
+    wui.markerResets = wui.markerResets + 1
+    st.waypoint = { uiMapID = o.mapID, position = { x = o.x / 100, y = o.y / 100 } }
+    if wui.pathfinding then
+      wui.pathBuilds = wui.pathBuilds + 1
+      wui.pathStep = { uiMapID = o.mapID, position = { x = o.x / 100 + 0.01, y = o.y / 100 } }
+      st.waypoint = wui.pathStep
+    end
+    C_SuperTrack.SetSuperTrackedUserWaypoint(true)
+    H.fire("USER_WAYPOINT_UPDATED")
+    return wui.nav end,
   GetUserNavigation = function() return wui.nav end,
-  IsUserNavigationTracked = function() return wui.nav ~= nil and st.user end,
-  IsPathStepWaypointTracked = function() return false end,
+  IsUserNavigationTracked = function()
+    local n, p = wui.nav, st.waypoint
+    return n ~= nil and st.user and p ~= nil and n.mapID == p.uiMapID
+      and math.abs(n.x - p.position.x) < 0.00001 and math.abs(n.y - p.position.y) < 0.00001
+  end,
+  IsPathStepWaypointTracked = function()
+    return wui.pathfinding == true and wui.nav ~= nil and st.user and st.waypoint ~= nil and st.waypoint == wui.pathStep
+  end,
   IsUserNavigationFlagged = function(f) return wui.nav ~= nil and wui.nav.flags == f end,
   ClearUserNavigation = function()
+    record("clear", wui.nav and wui.nav.flags)
     wui.clears = wui.clears + 1; wui.nav = nil
+    st.waypoint = nil
+    H.fire("USER_WAYPOINT_UPDATED")
     -- Waypoint UI's USER_WAYPOINT_UPDATED handler: a removed supertracked waypoint -> ClearAllSuperTracked
-    if st.user then C_Timer.After(0.05, function() C_SuperTrack.ClearAllSuperTracked() end) end
+    if st.user then C_Timer.After(0.05, function()
+      -- Like the installed handler, inspect state at delivery time. A newer
+      -- pin or quest must not be erased by an old waypoint-removed event.
+      if st.waypoint == nil and st.user then C_SuperTrack.ClearAllSuperTracked() end
+    end) end
   end,
 } }
-function H.setManualWaypoint(name)
+function H.setManualWaypoint(name, source)
+  writer = source or "player"
+  record("navigation", { name = name })
   wui.nav = { name = name, mapID = 1421, x = 0.5, y = 0.5, flags = nil }; st.user = true; st.quest = nil
+  st.waypoint = { uiMapID = 1421, position = { x = 0.5, y = 0.5 } }
   H.fire("USER_WAYPOINT_UPDATED")
+  H.fire("SUPER_TRACKING_CHANGED")
+  writer = "bridge"
+end
+-- Waypoint UI's saved session after /reload (WaypointDB_Local.mapPinSessionData
+-- .userNavigation, MapPinUtil.CreatePinData fields, x/y normalised 0-1): the
+-- table is restored on load as-is, without NewUserNavigation. WoW keeps the
+-- native user waypoint; whether it is still supertracked depends on Waypoint
+-- UI's ADDONS_UNLOADING handling (tracked = true/false). Call before H.load.
+function H.restoreSession(nav, tracked)
+  wui.nav = {
+    name = nav.name, mapID = nav.mapID or 1421, x = nav.x or 0.5, y = nav.y or 0.5,
+    fromWUI = true, flags = nav.flags, iconTexture = nav.iconTexture,
+    iconType = nav.iconTexture and "TEXTURE" or nil, r = nav.r, g = nav.g, b = nav.b,
+    stripCoordinates = nav.stripCoordinates, superTracked = tracked and true or false,
+  }
+  st.waypoint = { uiMapID = wui.nav.mapID, position = { x = wui.nav.x, y = wui.nav.y } }
+  st.user = tracked and true or false
+end
+function H.setExternalQuest(questID, source)
+  writer = source or "player"
+  C_SuperTrack.SetSuperTrackedQuestID(questID)
+  writer = "bridge"
 end
 
 ----------------------------------------------------------------------- RestedXP
 -- Element shapes follow RXPGuides v4.11.23 (functions.lua / GuideLoader.lua).
-RXPG_ARROW = { element = nil, IsShown = function() return true end }
+RXPG_ARROW = { element = nil, shown = true }
+function RXPG_ARROW:IsShown() return self.shown end
+function RXPG_ARROW:Hide() self.shown = false end
+function RXPG_ARROW:Show() self.shown = true end
+-- RestedXP's addon object: the "Hide waypoint arrow" option is
+-- settings.profile.disableArrow; DrawArrow and UpdateMap calls are counted.
+H.rxp = { drawArrow = 0, updateMap = 0 }
+H.aceAddons.RXPGuides = {
+  settings = { profile = { disableArrow = false } },
+  arrowFrame = RXPG_ARROW,
+  DrawArrow = function() H.rxp.drawArrow = H.rxp.drawArrow + 1 end,
+  UpdateMap = function(reset) H.rxp.updateMap = H.rxp.updateMap + 1; H.rxp.lastUpdateReset = reset end,
+}
 function H.point(e) RXPG_ARROW.element = e end
 -- RXPFrame.activeSteps (GuideWindow.lua): sticky steps still running + the current step.
 RXPFrame = { activeSteps = {} }
@@ -103,10 +307,23 @@ function H.setActiveSteps(...)
   for _, s in ipairs(RXPFrame.activeSteps) do s.active = true end
 end
 -- newStep(index, opts, ...): opts may set loop = "" (#loop).
+-- Like RestedXP's guide window drawing the step (GuideWindow.lua ~1316-1328):
+-- every text-only or text-less element of a drawn step gets completed = true
+-- (headers, "*" notes, .mob, every .goto). #hidewindow steps are not drawn.
+-- opts.raw = true keeps the parser's flags (no render).
+function H.render(s)
+  if s.hidewindow then return s end
+  for _, e in ipairs(s.elements) do
+    if e.textOnly or not e.text then e.completed = true end
+  end
+  return s
+end
 function H.newStep(index, opts, ...)
   local s = { index = index, active = true, elements = {} }
-  for k, v in pairs(opts or {}) do s[k] = v end
+  local raw = opts and opts.raw
+  for k, v in pairs(opts or {}) do if k ~= "raw" then s[k] = v end end
   for _, e in ipairs({ ... }) do e.step = s; table.insert(s.elements, e) end
+  if not raw then H.render(s) end
   return s
 end
 -- .goto zone,x,y[,radius[,optional]]. dist = world distance (yd) from the player
@@ -135,37 +352,46 @@ function H.usespell(id) return { tag = "usespell", text = "-", spellId = id } en
 
 ----------------------------------------------------------------------- load + drive
 function H.load(root, savedVariables)
-  H.ns = {}
-  for _, f in ipairs({ "Core.lua", "LabelResolver.lua", "RXPAdapter.lua", "NavigationResolver.lua", "WaypointAdapter.lua", "Sync.lua" }) do
-    assert(loadfile(root .. "/" .. f))("RXPWaypointBridge", H.ns)
+  H.RXPW = {}
+  for _, f in ipairs({ "Core.lua", "LabelResolver.lua", "RXPAdapter.lua", "NavigationResolver.lua", "WaypointAdapter.lua", "Sync.lua", "Preview.lua", "SettingsPanel.lua" }) do
+    assert(loadfile(root .. "/" .. f))("RestedXPWaypoint", H.RXPW)
   end
-  RXPWaypointBridgeDB = savedVariables
-  H.fire("ADDON_LOADED", "RXPWaypointBridge")
+  RXPWDB = savedVariables
+  H.fire("ADDON_LOADED", "RestedXPWaypoint")
   H.fire("PLAYER_LOGIN")
-  H.slash = SlashCmdList.RXPWAYPOINTBRIDGE
-  return H.ns
+  H.slash = SlashCmdList.RESTEDXPWAYPOINT
+  return H.RXPW
 end
 
 function H.advance(seconds)
   local stop = now + seconds
   while true do
     local nextAt = stop
-    if ticker and ticker.next < nextAt then nextAt = ticker.next end
+    for _, ticker in ipairs(tickers) do
+      if not ticker.cancelled and ticker.next < nextAt then nextAt = ticker.next end
+    end
     for _, t in ipairs(timers) do if t.at < nextAt then nextAt = t.at end end
     now = nextAt
-    for i = #timers, 1, -1 do local t = timers[i]; if t.at <= now then table.remove(timers, i); t.fn() end end
-    if ticker and ticker.next <= now then ticker.next = now + ticker.i; ticker.fn() end
+    -- FIFO for equal-time callbacks, then tickers in creation order.
+    local i = 1
+    while i <= #timers do
+      local t = timers[i]
+      if t.at <= now then table.remove(timers, i); t.fn() else i = i + 1 end
+    end
+    for _, ticker in ipairs(tickers) do
+      if not ticker.cancelled and ticker.next <= now then ticker.next = now + ticker.i; ticker.fn() end
+    end
     if now >= stop then break end
   end
 end
 
 -- True when Waypoint UI's navigation points at the goto created with this dist.
 function H.navAt(dist) return wui.nav ~= nil and math.abs(wui.nav.x * 200 - dist) < 1e-6 end
-function H.mode() local s = H.ns.Sync.GetState(); return s.mode, s.questID, s.kind end
+function H.mode() local s = H.RXPW.Sync.GetState(); return s.mode, s.questID, s.kind end
 function H.lastChat(pattern) for i = #H.chat, 1, -1 do if H.chat[i]:find(pattern) then return H.chat[i] end end end
 function H.countChat(pattern) local n = 0 for _, m in ipairs(H.chat) do if m:find(pattern) then n = n + 1 end end return n end
-function H.failureText() return (H.ns.Sync.GetState().lastFailure or {}).text or "" end
-function H.transitionText() return (H.ns.Sync.GetState().lastTransition or {}).text or "" end
+function H.failureText() return (H.RXPW.Sync.GetState().lastFailure or {}).text or "" end
+function H.transitionText() return (H.RXPW.Sync.GetState().lastTransition or {}).text or "" end
 
 function H.finish()
   print(string.format("%d passed, %d failed", H.passes, H.fails))

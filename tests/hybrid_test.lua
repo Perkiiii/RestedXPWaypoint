@@ -28,7 +28,7 @@ local function fire(event, ...) for _, f in ipairs(frames) do if f.events[event]
 local chat = {}
 DEFAULT_CHAT_FRAME = { AddMessage = function(_, m) table.insert(chat, m) end }
 SlashCmdList = {}
-C_AddOns = { IsAddOnLoaded = function() return true end, GetAddOnMetadata = function(a) return a == "RXPWaypointBridge" and "0.4.0" or "x" end }
+C_AddOns = { IsAddOnLoaded = function() return true end, GetAddOnMetadata = function(a) return a == "RestedXPWaypoint" and "0.4.0" or "x" end }
 C_Map = { GetMapInfo = function(id) return { name = "Map" .. id } end, CanSetUserWaypointOnMap = function() return true end }
 
 -- WoW supertracking (mock assumes one supertracked target at a time)
@@ -92,14 +92,14 @@ local function header(t) return { text = t, textOnly = true } end
 local function point(e) RXPG_ARROW.element = e end
 
 ----------------------------------------------------------------------- load addon
-local ns = {}
+local RXPW = {}
 for _, f in ipairs({ "Core.lua", "LabelResolver.lua", "RXPAdapter.lua", "NavigationResolver.lua", "WaypointAdapter.lua", "Sync.lua" }) do
-  assert(loadfile(ROOT .. "/" .. f))("RXPWaypointBridge", ns)
+  assert(loadfile(ROOT .. "/" .. f))("RestedXPWaypoint", RXPW)
 end
-RXPWaypointBridgeDB = { debug = true }
-fire("ADDON_LOADED", "RXPWaypointBridge")
+RXPWDB = { debug = true }
+fire("ADDON_LOADED", "RestedXPWaypoint")
 fire("PLAYER_LOGIN")
-local slash = SlashCmdList.RXPWAYPOINTBRIDGE
+local slash = SlashCmdList.RESTEDXPWAYPOINT
 
 local function advance(seconds)
   local stop = now + seconds
@@ -113,13 +113,13 @@ local function advance(seconds)
     if now >= stop then break end
   end
 end
-local function mode() local s = ns.Sync.GetState(); return s.mode, s.questID end
+local function mode() local s = RXPW.Sync.GetState(); return s.mode, s.questID end
 local function lastChat(pattern) for i = #chat, 1, -1 do if chat[i]:find(pattern) then return chat[i] end end end
-local function failureText() return (ns.Sync.GetState().lastFailure or {}).text or "" end
+local function failureText() return (RXPW.Sync.GetState().lastFailure or {}).text or "" end
 
 ------------------------------------------------------------------- scenarios
 -- 1. Coordinates strategy (default): travel then turn-in stays on coordinates
-check("default strategy is coordinates", ns.db.strategy == "coordinates")
+check("default strategy is coordinates", RXPW.db.strategy == "coordinates")
 local A = goto_(10, 10); newStep(1, A, header("Follow the road"))
 point(A); advance(1)
 check("travel waypoint synced as coordinates", wui.writes == 1 and mode() == "coordinates" and wui.nav.x == 0.1, wui.writes)
@@ -127,19 +127,20 @@ local Q1 = 101; quests[Q1] = { title = "Infestation Investigation", ready = true
 local C = goto_(20, 0); local stepC = newStep(2, C, header("Talk to Karos"), turnin(Q1, "Infestation Investigation"), { tag = "accept", questId = 102, text = "Accept Ride" })
 point(C); advance(1)
 check("turn-in uses coordinates under coordinates strategy", wui.writes == 2 and mode() == "coordinates" and st.setQuestCalls == 0)
-check("label is the step instruction", wui.nav.name == "Talk to Karos", wui.nav and wui.nav.name)
+-- v0.5.6: the first real instruction wins over a ">>" heading.
+check("label is the step instruction", wui.nav.name == "Turn in Infestation Investigation", wui.nav and wui.nav.name)
 
 -- 2. Switch to hybrid: immediate re-evaluation, coordinates -> native
 slash("mode hybrid")
-check("strategy saved", RXPWaypointBridgeDB.strategy == "hybrid")
+check("strategy saved", RXPWDB.strategy == "hybrid")
 check("bridge waypoint cleared before supertracking", wui.nav == nil and wui.clears == 1)
 check("quest not yet set during the clear delay", st.setQuestCalls == 0)
 advance(0.3)
 check("quest supertracked after the delay (survives ClearAllSuperTracked)", st.quest == Q1, st.quest)
 advance(1)
 local m, q = mode()
-check("native mode verified", m == "native" and q == Q1 and not ns.Sync.GetState().pending, m)
-check("transition recorded", (ns.Sync.GetState().lastTransition or {}).text == "coordinates -> native quest 101")
+check("native mode verified", m == "native" and q == Q1 and not RXPW.Sync.GetState().pending, m)
+check("transition recorded", (RXPW.Sync.GetState().lastTransition or {}).text == "coordinates -> native quest 101")
 
 -- 3. Idempotent under quest-log spam
 local calls, writes = st.setQuestCalls, wui.writes
@@ -149,13 +150,13 @@ check("no re-supertracking on repeated quest events", st.setQuestCalls == calls 
 
 -- RestedXP supertracking the same quest is not an outside change
 C_SuperTrack.SetSuperTrackedQuestID(Q1); fire("SUPER_TRACKING_CHANGED"); advance(2)
-check("RestedXP re-supertracking our quest is not an outside change", ns.Sync.GetState().external == nil, ns.Sync.GetState().external)
+check("RestedXP re-supertracking our quest is not an outside change", RXPW.Sync.GetState().external == nil, RXPW.Sync.GetState().external)
 
 -- 4. Turn-in done -> next instruction is an accept -> back to coordinates at same spot
 stepC.elements[3].completed = true; quests[Q1] = nil; st.quest = nil
 fire("QUEST_TURNED_IN"); advance(1)
 check("native -> coordinates after turn-in", mode() == "coordinates" and wui.nav ~= nil and wui.nav.x == 0.2, mode())
-check("transition native -> coordinates recorded", (ns.Sync.GetState().lastTransition or {}).text == "native quest 101 -> coordinates")
+check("transition native -> coordinates recorded", (RXPW.Sync.GetState().lastTransition or {}).text == "native quest 101 -> coordinates")
 
 -- 5. Intermediate waypoints never go native
 local Q2 = 201; quests[Q2] = { title = "Cave Delivery", ready = true, poi = 38 }
@@ -243,7 +244,7 @@ fire("QUEST_LOG_UPDATE"); advance(2)
 check("mode change held while a manual waypoint is tracked", st.setQuestCalls == calls and wui.writes == writes and wui.nav.name == "Repair")
 local h2 = goto_(14, 0); newStep(12, h2, header("Walk on"))
 point(h2); advance(2)
-check("bridge resumes on the next RestedXP destination", wui.nav.flags == "RXPWaypointBridge" and wui.nav.x == 0.14)
+check("bridge resumes on the next RestedXP destination", wui.nav.flags == "RestedXPWaypoint" and wui.nav.x == 0.14)
 
 -- 12. Same-coordinate label change still works (v0.3 regression)
 local s1 = goto_(16, 0); newStep(13, s1, header("Talk to Karos"))
@@ -257,7 +258,7 @@ check("same coordinates, new label -> one silent rename", wui.writes == writes +
 local Q9 = 901; quests[Q9] = { title = "Stale", ready = true, poi = 18 }
 local t1 = goto_(18, 0); newStep(15, t1, turnin(Q9, "Stale"))
 point(t1); advance(0.5)
-local midPending = ns.Sync.GetState().pending
+local midPending = RXPW.Sync.GetState().pending
 local t2 = goto_(25, 0); newStep(16, t2, header("Travel to town"))
 point(t2); advance(2)
 check("transition was in progress when RestedXP moved on", midPending == true, midPending)

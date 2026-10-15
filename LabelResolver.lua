@@ -1,4 +1,4 @@
--- RXP Waypoint Bridge
+-- RestedXP Waypoint
 -- LabelResolver: turns RestedXP's arrow element into a short, clean
 -- description for Waypoint UI. Like RXPAdapter, it reads RestedXP internals,
 -- so every field is type-checked.
@@ -27,15 +27,17 @@
 --   3. element.text         the waypoint's own ">>" text (not generated coordinate text)
 --   4. element.parent       RestedXP's linked objective, if not completed
 --   5. following lines      in the same step, up to the next waypoint group:
---                           the first incomplete instruction (warnings only as a last resort),
+--                           the first pending real instruction (with live progress),
+--                           else a text-only heading, warnings only as a last resort,
 --                           or the ">>" text of the next waypoint in the same route chain
---   6. preceding lines      only when this is the step's first waypoint
+--   6. preceding lines      only when this is the step's first waypoint (same order)
 --   7. step.title
 --   8. "Step N"             fallback (coordinates stay visible)
--- Completed or skipped instructions are never used.
+-- Finished instructions are never used (see IsDone: RestedXP's render-time
+-- "completed" flag on text-only lines does not count).
 
-local _, ns = ...
-local Label = ns.Label
+local _, RXPW = ...
+local Label = RXPW.Label
 
 -- Longest label in bytes before it is shortened at a word boundary.
 local MAX_LENGTH = 60
@@ -84,8 +86,8 @@ function Label.Clean(text)
     text = firstLine
 
     text = text:gsub("%c", " ")
-    -- Progress counters would go stale on a static label: "Worg slain: 3/10".
-    text = text:gsub("%s*:?%s*%(?%d+%s*/%s*%d+%)?%s*$", "")
+    -- Progress counts ("1/15 Windstone Cluster") are kept: the bridge refreshes
+    -- the label when RestedXP's objective text changes (v0.5.6).
     text = text:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
     -- Needs at least one letter: RestedXP's "+1" placeholder is not a label.
     if text == "" or not text:find("[%a\128-\255]") then return nil end
@@ -120,8 +122,13 @@ local function IsWaypointElement(element)
     return element.arrow == true or element.tag == "goto" or element.tag == "waypoint"
 end
 
+-- RestedXP's guide window sets completed = true on EVERY text-only or
+-- text-less element it draws (GuideWindow.lua ~1316-1328: ">>" headers, "*"
+-- notes, .mob/.target, and every .goto), so "completed" alone does not mean
+-- done. Real progress: SetElementComplete sets completed AND skip, and a reached
+-- waypoint sets skip. So: skip, or completed on a real instruction.
 local function IsDone(element)
-    return element.completed or element.skip
+    return element.skip or (element.completed and not element.textOnly and element.text ~= nil) or false
 end
 
 local function IsWarning(text)
@@ -172,12 +179,41 @@ local function FindIndex(elements, element)
     end
 end
 
+-- Validate RestedXP's explicit link within this active step. Consecutive
+-- waypoints may be crossed only when they share that exact parent. Keep the
+-- full instruction block (including sibling objectives) before the group.
+function Label.LinkedBlock(element)
+    local step, parent = element.step, element.parent
+    if type(step) ~= "table" or not step.active or type(step.elements) ~= "table"
+        or type(parent) ~= "table" or IsDone(parent) then return nil end
+    local elements = step.elements
+    local index, parentIndex = FindIndex(elements, element), FindIndex(elements, parent)
+    if not index or not parentIndex or parentIndex >= index then return nil end
+    for i = parentIndex + 1, index - 1 do
+        local e = elements[i]
+        if type(e) == "table" and IsWaypointElement(e) and e.parent ~= parent then return nil end
+    end
+    local first = parentIndex - 1
+    while first >= 1 do
+        local e = elements[first]
+        if type(e) == "table" and IsWaypointElement(e) then break end
+        first = first - 1
+    end
+    return first + 1, index - 1, index
+end
+
 -- Instructions that follow the waypoint in its step, up to the next
 -- waypoint group. Consecutive waypoints right after it are treated as the
 -- same route chain, so a chain ending in ".goto ... >> Enter the crypt" is
 -- labelled by that text.
+-- Within the segment the first pending real instruction wins (an objective
+-- with its live progress, "Turn in X", "Fly to Y"); text-only headings
+-- (">>Click on the Crystals") are the fallback, warnings the last resort.
+-- (In game RestedXP marks text-only lines completed when it draws them, so
+-- headings were never chosen ahead of instructions; v0.5.6 keeps that order
+-- deliberately and uses headings instead of falling back to "Step N".)
 local function ScanFollowing(elements, index)
-    local warning
+    local heading, warning
     local passedInstruction = false
 
     for i = index + 1, #elements do
@@ -194,6 +230,8 @@ local function ScanFollowing(elements, index)
                     if not IsDone(element) then
                         if IsWarning(text) then
                             warning = warning or Candidate(text, "following warning text")
+                        elseif element.textOnly then
+                            heading = heading or Candidate(text, "following heading")
                         else
                             local found = Candidate(text, "following instruction")
                             if found then return found end
@@ -203,25 +241,32 @@ local function ScanFollowing(elements, index)
             end
         end
     end
-    return nil, warning
+    return heading, warning
 end
 
--- Instructions before the waypoint, only when it is the step's first waypoint.
+-- Instructions before the waypoint, only when it is the step's first waypoint
+-- (real instructions first, then headings).
 local function ScanPreceding(elements, index)
     for i = 1, index - 1 do
         local element = elements[i]
         if type(element) == "table" and IsWaypointElement(element) then return nil end
     end
+    local heading
     for i = 1, index - 1 do
         local element = elements[i]
         if type(element) == "table" and not IsDone(element) then
             local text = InstructionText(element)
             if text and not IsWarning(text) then
-                local found = Candidate(text, "preceding instruction")
-                if found then return found end
+                if element.textOnly then
+                    heading = heading or Candidate(text, "preceding heading")
+                else
+                    local found = Candidate(text, "preceding instruction")
+                    if found then return found end
+                end
             end
         end
     end
+    return heading
 end
 
 --------------------------------------------------------------------------------
@@ -238,7 +283,7 @@ function Label.Resolve(element)
 
     if not found then
         local parent = element.parent
-        if type(parent) == "table" and not IsDone(parent) then
+        if Label.LinkedBlock(element) then
             found = Candidate(InstructionText(parent), "linked objective")
         end
     end

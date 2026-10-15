@@ -1,0 +1,17 @@
+## Interface: 16001
+## Title: RestedXP Waypoint
+## Notes: An unofficial companion addon that displays RestedXP navigation through Waypoint UI.
+## Author: Independent contributors
+## Version: 0.6.1
+## Category: Quests
+## OptionalDeps: RXPGuides, WaypointUI
+## SavedVariables: RXPWDB
+
+Core.lua
+LabelResolver.lua
+RXPAdapter.lua
+NavigationResolver.lua
+WaypointAdapter.lua
+Sync.lua
+Preview.lua
+SettingsPanel.lua

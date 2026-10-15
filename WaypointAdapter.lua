@@ -15,7 +15,6 @@ local WUI_ADDON = "WaypointUI"
 -- (normalised, then scaled back) against a RestedXP target.
 local MATCH_TOLERANCE = 0.001
 
-local C_SuperTrack = C_SuperTrack
 local format = string.format
 local type = type
 local tostring = tostring
@@ -64,14 +63,43 @@ local function GetTrackedNavigation()
     return nav, tracked and true or false
 end
 
--- True when Waypoint UI is already navigating to this target via a
--- bridge-owned navigation, so no write is needed.
+-- True when Waypoint UI is already navigating to this target's coordinates
+-- via a bridge-owned navigation (the label may still differ).
 function WUI.IsShowingTarget(target)
     local nav, tracked = GetTrackedNavigation()
     if not (nav and tracked and nav.flags == ns.OWNER_FLAG) then return false end
     if nav.mapID ~= target.mapID then return false end
     if not (ns.IsFiniteNumber(nav.x) and ns.IsFiniteNumber(nav.y)) then return false end
     return abs(nav.x * 100 - target.x) < MATCH_TOLERANCE and abs(nav.y * 100 - target.y) < MATCH_TOLERANCE
+end
+
+-- True when the bridge-owned navigation already shows this target's label.
+function WUI.HasTargetLabel(target)
+    local nav = WUI.GetNavigation()
+    return nav ~= nil and nav.flags == ns.OWNER_FLAG and nav.name == target.label
+        and (nav.stripCoordinates == true) == (target.stripCoordinates == true)
+end
+
+-- True when Waypoint UI is following a bridge-owned custom navigation.
+function WUI.IsOwnedNavigationTracked()
+    local nav, tracked = GetTrackedNavigation()
+    return nav ~= nil and tracked and nav.flags == ns.OWNER_FLAG
+end
+
+-- Removes the bridge's own custom navigation (never anyone else's).
+-- ClearUserNavigation(false, true): also remove the native user waypoint
+-- it created, and do not advance Waypoint UI's multi-pin queue.
+-- Note: Waypoint UI reacts to the removed native waypoint with
+-- C_SuperTrack.ClearAllSuperTracked() (MapPin.lua USER_WAYPOINT_UPDATED
+-- handler) when the waypoint was supertracked, so callers must set any new
+-- supertracking AFTER that has run, not before. Returns true if cleared.
+function WUI.ClearOwnedNavigation()
+    local api = GetNavigationAPI()
+    if not api or type(api.ClearUserNavigation) ~= "function" then return false end
+    local nav = WUI.GetNavigation()
+    if not (nav and nav.flags == ns.OWNER_FLAG) then return false end
+    local ok = pcall(api.ClearUserNavigation, false, true)
+    return ok
 end
 
 -- Name of a tracked navigation that the bridge did not create, or nil.
@@ -85,21 +113,34 @@ end
 
 -- Describes what Waypoint UI is following when it is NOT the bridge's
 -- navigation; returns nil while the bridge's navigation is being followed.
-function WUI.DescribeOutsideNavigation()
+-- expectedQuestID: in native quest mode, that quest being supertracked counts
+-- as the bridge's navigation, whoever set it (RestedXP sets it too).
+function WUI.DescribeOutsideNavigation(expectedQuestID)
+    if expectedQuestID and ns.Nav.IsNativeQuestActive(expectedQuestID) then
+        return nil
+    end
+
     local nav, tracked = GetTrackedNavigation()
     if nav and tracked then
         if nav.flags == ns.OWNER_FLAG then return nil end
         return format("another waypoint is tracked (%s)", tostring(nav.name or "unnamed"))
     end
 
-    local questID = C_SuperTrack and C_SuperTrack.GetSuperTrackedQuestID and C_SuperTrack.GetSuperTrackedQuestID()
-    if type(questID) == "number" and questID > 0 then
+    local questID = ns.Nav.GetSuperTrackedQuest()
+    if questID then
         return format("quest %d is supertracked", questID)
+    end
+    if expectedQuestID then
+        return "bridge quest is no longer supertracked (turned in or cleared)"
     end
     return "bridge waypoint is no longer tracked (cleared or arrived)"
 end
 
 -- Returns true on success, or false plus a reason.
+-- Calling this again with the same coordinates only renames the navigation:
+-- Waypoint UI skips C_Map.SetUserWaypoint when the native waypoint already
+-- matches (MapPin.NewUserNavigation), so there is no new destination.
+-- stripCoordinates (documented option) hides the coordinate line under the name.
 function WUI.SetNavigation(target, suppressAudio)
     local api = GetNavigationAPI()
     if not api or type(api.NewUserNavigation) ~= "function" then
@@ -113,6 +154,7 @@ function WUI.SetNavigation(target, suppressAudio)
         y = target.y,
         flags = ns.OWNER_FLAG,
         suppressAudio = suppressAudio and true or false,
+        stripCoordinates = target.stripCoordinates and true or false,
     })
 
     if not ok then

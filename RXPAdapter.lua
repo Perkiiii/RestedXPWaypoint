@@ -14,6 +14,7 @@
 --   skip     true once the waypoint has been reached
 --   hidden   true while RestedXP is hiding the waypoint (activation radius)
 --   title    optional arrow label
+--   text, parent, tag   used by LabelResolver.lua to describe the waypoint
 --
 -- RestedXP never clears RXPG_ARROW.element; when no waypoint remains it only
 -- hides the arrow. A stale element is recognised by skip/hidden or by its
@@ -30,30 +31,6 @@ local C_Map = C_Map
 local format = string.format
 local type = type
 local tostring = tostring
-
-local function CleanLabel(text)
-    if type(text) ~= "string" then return nil end
-    text = text:gsub("|c%x%x%x%x%x%x%x%x", "")
-               :gsub("|r", "")
-               :gsub("|T.-|t", "")
-               :gsub("RXP_[A-Z]+_", "")
-               :gsub("\n", " ")
-               :gsub("^%s+", "")
-               :gsub("%s+$", "")
-    if text == "" then return nil end
-    return text
-end
-
-local function GetElementLabel(element, step)
-    local label = CleanLabel(element.title)
-    if not label and step then
-        label = CleanLabel(step.arrowtext) or CleanLabel(element.text) or CleanLabel(step.title)
-        if not label and step.index then
-            label = "Step " .. tostring(step.index)
-        end
-    end
-    return label or CleanLabel(element.text)
-end
 
 -- Destination identity: map plus coordinates rounded to 0.001 % of the map
 -- (well under a yard). Absorbs floating-point noise without merging distinct
@@ -90,11 +67,16 @@ function RXP.GetTarget()
     end
 
     local step = type(element.step) == "table" and element.step or nil
+    local labelInfo = ns.Label.Resolve(element)
     local target = {
+        element = element, -- for NavigationResolver; treat as read-only RestedXP data
         mapID = element.zone,
         x = element.x,
         y = element.y,
-        label = GetElementLabel(element, step),
+        label = labelInfo.label,
+        labelInfo = labelInfo,
+        -- Hide Waypoint UI's coordinate line only when the label says something useful.
+        stripCoordinates = not labelInfo.fallback,
         stepIndex = step and step.index,
         stepActive = step and step.active and true or false,
         hasStep = step ~= nil,
@@ -139,11 +121,34 @@ function RXP.GetTarget()
     return target, nil
 end
 
+-- Player distance in yards to the target's world position, using the
+-- HereBeDragons library RestedXP itself uses for its arrow (element.wx/wy
+-- are HBD world coordinates). Returns nil when it cannot be measured.
+function RXP.GetDistanceToTarget(target)
+    local element = target and target.element
+    if type(element) ~= "table" then return nil end
+    if not (ns.IsFiniteNumber(element.wx) and ns.IsFiniteNumber(element.wy)) then return nil end
+
+    local LibStub = _G.LibStub
+    local HBD = type(LibStub) == "table" and LibStub("HereBeDragons-2.0", true)
+    if not HBD or type(HBD.GetPlayerWorldPosition) ~= "function" or type(HBD.GetWorldDistance) ~= "function" then
+        return nil
+    end
+
+    local ok, px, py, instance = pcall(HBD.GetPlayerWorldPosition, HBD)
+    if not ok or not px or instance ~= element.instance then return nil end
+    local okDistance, distance = pcall(HBD.GetWorldDistance, HBD, instance, px, py, element.wx, element.wy)
+    if okDistance and ns.IsFiniteNumber(distance) then return distance end
+    return nil
+end
+
 --------------------------------------------------------------------------------
 -- Change observation
 --
 -- Called by the sync poller several times a second, so it only compares a
 -- handful of raw fields against the previous call: no tables, no strings.
+-- Instruction text is deliberately not compared: objective progress rewrites
+-- it constantly. Labels are resolved only when a target change is evaluated.
 -- Covers a new element (next waypoint, other step, other guide), the same
 -- element moving or changing map, and validity changes (reached, hidden,
 -- step deactivated).

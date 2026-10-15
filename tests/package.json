@@ -1,0 +1,11 @@
+{
+  "name": "rxp-waypoint-bridge-tests",
+  "private": true,
+  "description": "Offline Lua tests for RXP Waypoint Bridge, run in fengari.",
+  "scripts": {
+    "test": "node run.js"
+  },
+  "dependencies": {
+    "fengari": "0.1.4"
+  }
+}

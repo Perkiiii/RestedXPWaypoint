@@ -23,16 +23,17 @@ The developer tests every change by hand in game with `/reload`. There is no bui
 1. **RestedXP controls the intended route.** Mirror `RXPG_ARROW.element`. Do not re-implement RestedXP's waypoint selection.
 2. **Preserve intermediate waypoints.** A multi-`.goto` route must appear in Waypoint UI as the same sequence.
 3. **Never let quest supertracking silently override an explicit RestedXP travel waypoint.** Quest supertracking is a fallback, used only when RestedXP has no valid coordinate target. A step containing a quest ID is not a reason to switch.
-4. **Prefer public APIs.** For Waypoint UI, use only `WaypointUIAPI.Navigation` as documented in `WaypointUI/API.lua`. Do not use undocumented options such as `syncNativeWaypoint` or `coordinatesAreNormalized`, or internal modules. RestedXP has no public waypoint API. Keep every read of its internals in one clearly marked place.
+4. **Prefer public APIs.** For Waypoint UI, use only `WaypointUIAPI.Navigation` as documented in `WaypointUI/API.lua`. Do not use undocumented options such as `syncNativeWaypoint` or `coordinatesAreNormalized`, or internal modules. RestedXP has no public waypoint API. Keep every read of its internals in the RestedXP-facing files (`RXPAdapter.lua`, `LabelResolver.lua`, `NavigationResolver.lua`).
 5. **Never modify RestedXP or Waypoint UI**, either on disk or by replacing their functions at runtime. Hooks must be non-destructive (`hooksecurefunc`) and justified.
 6. **Validate external addon data.** Type-check every field read from another addon. Missing or unexpected data must produce a message or a no-op, never an uncaught Lua error.
 7. **Only clear navigation the bridge created.** Check ownership with `IsUserNavigationFlagged("RXPWaypointBridge")`. Do not call `ClearDestination()` routinely: it also clears all native supertracking.
 8. **Avoid unnecessary polling and repeated API calls.** Write to Waypoint UI only when the target actually changes. No heavy `OnUpdate` work.
 9. **Maintain WoW Forever compatibility.** Guard optional APIs, for example `C_AddOns and C_AddOns.IsAddOnLoaded`.
-10. **Keep it modular as it grows.** RestedXP reads belong only in `RXPAdapter.lua`, Waypoint UI calls only in `WaypointAdapter.lua`, and sync decisions in `Sync.lua`. Add new modules when a milestone needs them, not before.
+10. **Keep it modular as it grows.** RestedXP reads belong only in `RXPAdapter.lua` (targets), `LabelResolver.lua` (instruction text) and `NavigationResolver.lua` (turn-in detection; also the only place that calls `C_SuperTrack` and `C_QuestLog`). Waypoint UI calls belong only in `WaypointAdapter.lua`, and sync decisions in `Sync.lua`. Add new modules when a milestone needs them, not before.
 11. **Prefer clear, maintainable Lua** over clever code. Use locals, no accidental globals, and the shared addon namespace (`local addonName, ns = ...`).
 12. **Work incrementally.** Each milestone must be testable in game by hand and come with test steps. Do not implement features from later milestones early.
 13. **Never commit without the developer's approval.**
+14. **Labels: accuracy over cleverness.** Labels come only from RestedXP's own text, through its own waypoint-to-instruction links. Never show a completed instruction. When the link is ambiguous, fall back to `Step N`. Never change coordinates to improve a label.
 
 ## Verified integration facts (from installed source)
 
@@ -61,6 +62,28 @@ The developer tests every change by hand in game with `/reload`. There is no bui
 - RestedXP also exposes `addon.SendEvent` (AceEvent messages plus WeakAuras `ScanEvents`). `RXP_STEP_ACTIVATED` is sent on `C_Timer.After(0)` after a step activates.
 - `_G.RXPGuides` exists but is not a stable integration API.
 
+#### Guide instruction structure (`GuideLoader.lua` `parseLine`, `functions.lua`)
+
+- Each guide line becomes an element in `step.elements`, in guide order. `element.tag` is the command (`goto`, `accept`, `turnin`, `complete`, `fp`, `fly`, `target`, ...).
+- `line >> text` sets `element.text`. A bare `>>text` line becomes `{ text, textOnly = true }`; this is the usual "Talk to |cRXP_FRIENDLY_X|r" header. A `+text` line becomes an objective.
+- **Waypoint ↔ instruction link:** when a waypoint element is parsed, its `element.parent` is set to `addon.lastObjective`, the most recent *non-textOnly* text-bearing element above it in the same step. RestedXP drops the waypoint once its parent is completed or skipped (`updateArrowData`). A step's first `.goto` usually has no parent, and its instructions follow it.
+- A non-optional `.goto` with a radius and no text gets generated text `"Go to %.1f,%.1f (zone)"`. This is just coordinates, so don't use it as a label.
+- Quest elements:
+  - `.accept`/`.turnin` set `element.title` to the quest name. Their text may contain `*quest*` until the name loads.
+  - `.complete` keeps the author's text in `rawtext` (which can be a format string with `%d`) and rewrites `text` with live progress.
+  - Helper elements (`.target`, `.use`, `.zoneskip`, ...) only have text when the guide gives `>>`.
+- Text markup that appears in guides:
+  - `|cRXP_FRIENDLY_|ENEMY_|WARN_|LOOT_|BUY_|PICK_...|r` colour tokens. These are **not** valid hex colours, so strip them before generic `|c` handling.
+  - `|T...|t` textures (chat bubble icons, item icons), `|H...|h[...]|h` links, and a literal `\n`.
+- Completion: `element.completed` (set by `SetElementComplete`) and `element.skip`. Text-only lines never complete.
+- Names may carry NPC IDs: `|cRXP_FRIENDLY_Elatrell Featherlight::251368|r`. RestedXP strips `::%d+` for display (`functions.lua` ~930), and so does the label cleaner.
+- `.turnin` elements (`functions.lua` ~1369):
+  - `{ tag = "turnin", questId, title = "" -> quest name at runtime, text, flags, reward }`.
+  - A negative ID sets `skipIfMissing`. They are **not** `textOnly`, so a `.goto` placed after a turn-in gets it as `parent`.
+  - Completed on turn-in via `IsQuestTurnedIn`.
+- `.goto` radius semantics: a `.goto` with a radius is marked `skip` when reached (`UpdateGotoSteps`). It is a pass-through point (route chains, cave entrances, `,8,0` optional points). A `.goto` without a radius stays the step's destination until the step completes. `,0` optional points become `lowPrio`; a negative radius makes them `dynamic`.
+- RestedXP's own quest-state helpers use `C_QuestLog.IsOnQuest` and `C_QuestLog.IsComplete`. Waypoint UI uses `C_QuestLog.ReadyForTurnIn`, `C_Navigation.GetDistance/GetFrame`, `C_SuperTrack.GetHighestPrioritySuperTrackingType` and `Enum.SuperTrackingType`, all unguarded at file scope. Since Waypoint UI runs in Forever, these exist there.
+
 ### Waypoint UI (`WaypointUI`)
 
 - Public API: `WaypointUIAPI.Navigation`, documented at the top of `WaypointUI/API.lua`.
@@ -73,17 +96,24 @@ The developer tests every change by hand in game with `/reload`. There is no bui
 - `IsUserNavigationFlagged(flag)` checks `userNavigation.flags == flag`. The bridge uses the flag `"RXPWaypointBridge"`.
 - `ClearUserNavigation(preserveWaypoint?, suppressAdvance?)` clears only the user navigation. `ClearDestination()` also calls `C_SuperTrack.ClearAllSuperTracked()`, so avoid it.
 - Waypoint UI's quest presentation depends on native quest supertracking (`C_SuperTrack.GetSuperTrackedQuestID`). The public API cannot attach quest context to a custom coordinate.
+- For custom navigation, `Waypoint_DataProvider.CacheSuperTrackingInfo` displays `info.name`, plus a coordinate line unless `info.stripCoordinates` is set.
+- **Re-calling `NewUserNavigation` with identical coordinates only renames the navigation.** It skips `C_Map.SetUserWaypoint` when `IsCurrentWaypoint` matches, but still fires `MapPin.NewUserNavigation`, which refreshes the display. With pathfinding enabled, it also re-runs the path request.
+- Waypoint UI does not compute quest POI locations itself. Quest-POI location APIs (`C_QuestLog.GetNextWaypoint`, etc.) are unverified in Forever. Native targets are therefore checked with `C_Navigation.GetDistance()` only.
+- **Clearing a tracked user waypoint triggers `ClearAllSuperTracked()`.** Waypoint UI's `USER_WAYPOINT_UPDATED` handler calls `C_SuperTrack.ClearAllSuperTracked()` when the user waypoint disappears while supertracked. Any quest supertracking must therefore be set *after* clearing the bridge's waypoint, with a delay. `ClearUserNavigation(false, true)` also removes the native waypoint and suppresses the multi-pin advance.
 
-## Architecture (0.2.0)
+## Architecture (0.4.0)
 
 The load order is set in the `.toc`. All modules share the addon namespace `ns`.
 
 | File | Namespace | Responsibility |
 |---|---|---|
-| `Core.lua` | `ns` | Settings (`RXPWaypointBridgeDB`: `autoSync`, `debug`), `ns.Print`/`ns.PrintLine`/`ns.Debug`, shared helpers, slash commands, `ADDON_LOADED`/`PLAYER_LOGIN` |
-| `RXPAdapter.lua` | `ns.RXP` | **Only** place that reads RestedXP internals. `GetTarget()` returns `(target, reason)`: `reason` is nil when the target is valid, and then `target.key` is set. `HasTargetChanged()` is a cheap poll comparison. `ResetObservation()`. `DestinationKey()`. |
-| `WaypointAdapter.lua` | `ns.WUI` | **Only** place that calls Waypoint UI. `SetNavigation()`, `GetNavigation()`, `IsShowingTarget()`, `GetForeignNavigationName()`, `DescribeOutsideNavigation()`. |
-| `Sync.lua` | `ns.Sync` | `Initialize()`, `Start()`/`Stop()`, `SyncNow()`, `GetState()`. Contains the automatic sync logic. |
+| `Core.lua` | `ns` | Settings (`RXPWaypointBridgeDB`: `autoSync`, `debug`, `strategy` = `"coordinates"` (default) or `"hybrid"`), `ns.Print`/`ns.PrintLine`/`ns.Debug`, shared helpers, slash commands (including `/rxpwb mode`), `ADDON_LOADED`/`PLAYER_LOGIN` |
+| `LabelResolver.lua` | `ns.Label` | `Resolve(element)` returns `{ label, source, cleaned, shortened, fallback, raw }`, using the priority documented at the top of the file. `Clean(text)` returns `cleaned, wasCleaned, wasShortened`. Reads RestedXP step data. |
+| `RXPAdapter.lua` | `ns.RXP` | Reads RestedXP's arrow target. `GetTarget()` returns `(target, reason)`: `reason` is nil when the target is valid, and then `target.key` is set. `target` also has `label`, `labelInfo` and `stripCoordinates`. `target.element` is the raw RestedXP element (read-only). `HasTargetChanged()` is a cheap poll comparison that deliberately ignores text. `ResetObservation()`. `DestinationKey()`. `GetDistanceToTarget()` uses HereBeDragons through `LibStub`, with the element's `wx`/`wy`. |
+| `NavigationResolver.lua` | `ns.Nav` | `FindTurnIn(element)` analyses structure only and can be tested offline. `GetQuestState()`. `Decide(target, strategy)` returns `{ mode, reason, questID, questName, questState, hybridMode }`. Native wrappers: `SetNativeQuest()`, `ReleaseNativeQuest()` (only if still supertracked), `IsNativeQuestActive()`, `VerifyNative()`. Reads RestedXP step data and calls `C_SuperTrack`, `C_QuestLog` and `C_Navigation`. |
+| `WaypointAdapter.lua` | `ns.WUI` | **Only** place that calls Waypoint UI. `SetNavigation()` (passes `stripCoordinates`), `GetNavigation()`, `IsShowingTarget()` (coordinates), `HasTargetLabel()`, `IsOwnedNavigationTracked()`, `ClearOwnedNavigation()` (bridge-owned only), `GetForeignNavigationName()`, `DescribeOutsideNavigation(expectedQuestID)`. |
+| `Sync.lua` | `ns.Sync` | The single controller. `Initialize()`, `Start()`/`Stop()`, `SyncNow()`, `OnStrategyChanged()`, `GetState()`. |
+| `tests/` | — | `node tests/run.js` runs `*_test.lua` in fengari against mocked APIs (`npm install --prefix tests` once). WoW ignores this folder because it isn't in the `.toc`. **Update or extend these tests whenever you change resolver or sync behaviour.** |
 
 ### Sync rules (keep these invariants)
 
@@ -96,18 +126,42 @@ The load order is set in the `.toc`. All modules share the addon namespace `ns`.
   - If a tracked non-bridge navigation exists, mark the key handled and pause.
   - If Waypoint UI already shows the target, record success without writing.
 - Automatic writes use `suppressAudio = true`. Manual `/rxpwb sync` keeps the audio.
+- **Labels:** if the key equals `handledKey` but the label differs from `handledLabel`, re-send silently as a label update. Only do this while `IsShowingTarget()` is true (bridge-owned, tracked, same coordinates). A failed label update never sets `failedKey`. Text changes alone never trigger an evaluation.
 
-## Current state (0.2.0)
+### Hybrid rules (keep these invariants)
 
-Automatic coordinate mirroring is implemented and waiting for in-game acceptance tests. There is no quest logic, no arrow hiding and no settings UI.
+- **The handled state is `(handledMode, handledKey, handledQuest/handledId)`.** `Evaluate()` computes the desired state with `Nav.Decide`. It writes only if that differs from the handled state, so repeated evaluations are idempotent.
+- **Native only for an eligible turn-in.** All of these must hold:
+  - The arrow is on a guide `.goto` that is not pass-through: no radius, not `dynamic`, not `lowPrio`, not `generated`.
+  - The turn-in is linked by `parent`, or it is the first pending non-`textOnly` instruction after the waypoint, before the next waypoint.
+  - The quest is in the log and ready.
+  - Native APIs exist.
+  - Never choose native just because a quest ID appears somewhere in the step.
+- **Coordinates → native:**
+  - Clear only the bridge-owned navigation.
+  - Wait `NATIVE_SET_DELAY`, then `SetSuperTrackedQuestID`.
+  - After `NATIVE_VERIFY_DELAY`, run `VerifyNative`. It checks: the supertracked quest matches; quest priority (when measurable); `C_Navigation.GetDistance() > 0`; and `|native − RestedXP distance| ≤ 50 yd` (one-sided).
+  - Failure → `FailNative`: record `nativeFailed[id]`, release the quest, and fall back to coordinates. Don't retry until `PLAYER_ENTERING_WORLD` or a strategy change.
+- **Native → coordinates:** `ToCoordinates` releases the quest only if it is still supertracked, resets `handledKey`, then calls `Apply`.
+- **Cancelling stale work:** every transition (`Apply`, `BeginNative`, `ResetHandled`) bumps `generation`, and timer callbacks compare it. `BeginNative` sets the handled state optimistically, so evaluations during a transition see it.
+- **Quest events** (`QUEST_LOG_UPDATE`, `QUEST_TURNED_IN`, `QUEST_ACCEPTED`, `QUEST_REMOVED`) schedule one coalesced `Evaluate("quest")` after 0.5 s. This only happens in hybrid mode, or while native is active. Debug messages about unchanged states are only logged for `"target"` triggers.
+- **Manual waypoints:** while a non-bridge Waypoint UI navigation is tracked, mode changes at the same destination key are held. A new destination key resumes, as in v0.2.
+- **RestedXP supertracking:** RestedXP supertracking the bridge's own native quest is not an outside change (`DescribeOutsideNavigation(expectedQuestID)`). Other quests RestedXP supertracks are recorded as outside changes and never fought.
+
+## Current state (0.4.0)
+
+- v0.2 coordinate mirroring has passed in-game tests. The v0.3 labels and v0.4 hybrid navigation still need in-game acceptance.
+- The default strategy is `coordinates`. `hybrid` is experimental and only promotes turn-ins.
+- Offline tests (`node tests/run.js`) cover labels, turn-in detection, intermediate-waypoint protection, transitions, fallbacks, idempotency, manual overrides and strategy switching. The mocks assume WoW supertracks one target at a time; that is unverified in Forever.
 
 ## Roadmap
 
 1. 0.1: proof of concept with manual sync (done).
-2. 0.2: automatic route mirroring (implemented).
-3. 0.3: explicit pause and resume for manual waypoints, a policy for RestedXP's quest supertracking during objective steps, and more diagnostics.
-4. 0.4: quest-supertracking fallback when RestedXP has no coordinate target.
-5. 1.0: optional visual-only hiding of the RestedXP arrow, world-coordinate targets, minimal settings, and validation against the launch client.
+2. 0.2: automatic route mirroring (done).
+3. 0.3: step descriptions (implemented).
+4. 0.4: hybrid navigation for quest turn-ins (implemented, experimental).
+5. Next: validate hybrid in game and decide on the default. Possibly cover more quest steps, and ask about an upstream Waypoint UI `contextQuestID`-style API.
+6. 1.0: optional visual-only hiding of the RestedXP arrow, explicit pause and resume, world-coordinate targets, minimal settings, and validation against the launch client.
 
 ## Testing checklist for any change
 
@@ -117,3 +171,6 @@ Automatic coordinate mirroring is implemented and waiting for in-game acceptance
 - Run `/rxpwb sync` and confirm the Waypoint UI destination matches RestedXP's map and coordinates.
 - Set a manual Waypoint UI destination. The bridge must not overwrite it until RestedXP's destination changes.
 - Run `/reload` and confirm the bridge loads cleanly, settings persist, and an unchanged destination is not rewritten.
+- Check that the label matches RestedXP's visible instruction for the arrow's waypoint. If it doesn't, use `/rxpwb status` with debug on to see the label source and raw text.
+- Hybrid: a turn-in with intermediate waypoints must follow every waypoint, then go native at the NPC. After the turn-in it must return to coordinates. `/rxpwb status` shows the decision reason.
+- Run `node tests/run.js` before handing work back.

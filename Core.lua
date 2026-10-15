@@ -1,6 +1,7 @@
 -- RXP Waypoint Bridge
 -- Core: shared helpers, saved settings, initialisation and slash commands.
--- Load order (see .toc): Core.lua, RXPAdapter.lua, WaypointAdapter.lua, Sync.lua
+-- Load order (see .toc): Core.lua, LabelResolver.lua, RXPAdapter.lua,
+-- NavigationResolver.lua, WaypointAdapter.lua, Sync.lua
 
 local addonName, ns = ...
 
@@ -8,7 +9,9 @@ local addonName, ns = ...
 -- bridge-owned navigation apart from the player's own.
 ns.OWNER_FLAG = "RXPWaypointBridge"
 
+ns.Label = {}
 ns.RXP = {}
+ns.Nav = {}
 ns.WUI = {}
 ns.Sync = {}
 
@@ -27,9 +30,14 @@ local floor = math.floor
 -- Settings (SavedVariables: RXPWaypointBridgeDB)
 --------------------------------------------------------------------------------
 
+-- strategy: "coordinates" (v0.3 behaviour, safe default) or "hybrid"
+-- (native quest supertracking for eligible turn-ins).
+local STRATEGIES = { coordinates = true, hybrid = true }
+
 local DEFAULTS = {
     autoSync = true,
     debug = false,
+    strategy = "coordinates",
 }
 
 -- Replaced by the saved table on ADDON_LOADED.
@@ -45,6 +53,7 @@ local function LoadSettings()
     for key, value in pairs(DEFAULTS) do
         if type(db[key]) ~= type(value) then db[key] = value end
     end
+    if not STRATEGIES[db.strategy] then db.strategy = DEFAULTS.strategy end
     ns.db = db
 end
 
@@ -125,6 +134,14 @@ function ns.PrintHelp()
     ns.PrintLine("/rxpwb on - enable automatic sync (currently %s)", OnOff(ns.db.autoSync))
     ns.PrintLine("/rxpwb off - disable automatic sync")
     ns.PrintLine("/rxpwb debug - toggle debug messages (currently %s)", OnOff(ns.db.debug))
+    ns.PrintLine("/rxpwb mode coordinates||hybrid - navigation strategy (currently %s)", ns.db.strategy)
+end
+
+local function DescribeMode(mode, questID)
+    if mode == "native" then
+        return questID and format("native quest %d", questID) or "native quest"
+    end
+    return mode or "none"
 end
 
 function ns.PrintStatus()
@@ -144,6 +161,15 @@ function ns.PrintStatus()
             tostring(target.mapID), target.mapName and (" (" .. target.mapName .. ")") or "",
             ns.FormatCoord(target.x), ns.FormatCoord(target.y))
         ns.PrintLine("RXP label: %s", target.label or "(none)")
+        local info = target.labelInfo
+        if info then
+            ns.PrintLine("Label source: %s | cleaned: %s | shortened: %s | fallback: %s",
+                info.source, YesNo(info.cleaned), YesNo(info.shortened), YesNo(info.fallback))
+            if ns.db.debug and info.raw then
+                -- Doubled pipes make chat show the escape codes literally.
+                ns.PrintLine("Label raw text: %s", (info.raw:gsub("|", "||")))
+            end
+        end
         ns.PrintLine("RXP step: %s%s | arrow shown: %s",
             tostring(target.stepIndex or "-"),
             target.hasStep and (target.stepActive and " (active)" or " (inactive)") or "",
@@ -153,6 +179,15 @@ function ns.PrintStatus()
         ns.PrintLine("Ready to sync: %s - %s", YesNo(false), reason)
     else
         ns.PrintLine("Ready to sync: %s", YesNo(wui.apiAvailable))
+        local decision = ns.Nav.Decide(target, ns.db.strategy)
+        if decision.questID then
+            local qs = decision.questState or {}
+            ns.PrintLine("Turn-in quest: %d (%s) | in log: %s | ready for turn-in: %s%s",
+                decision.questID, tostring(decision.questName or "?"), YesNo(qs.inLog), YesNo(qs.ready),
+                (decision.pendingTurnIns or 1) > 1 and format(" | %d turn-ins pending here", decision.pendingTurnIns) or "")
+        end
+        ns.PrintLine("Decision (%s): %s - %s", ns.db.strategy, DescribeMode(decision.mode, decision.questID),
+            tostring(decision.reason))
     end
 
     local nav = ns.WUI.GetNavigation()
@@ -166,11 +201,25 @@ function ns.PrintStatus()
         ns.PrintLine("Waypoint UI destination: none")
     end
 
-    ns.PrintLine("Auto sync: %s%s | debug: %s", OnOff(ns.db.autoSync),
+    ns.PrintLine("Auto sync: %s%s | strategy: %s | debug: %s", OnOff(ns.db.autoSync),
         ns.db.autoSync and (sync.running and " (running)" or " (not running)") or "",
-        OnOff(ns.db.debug))
+        ns.db.strategy, OnOff(ns.db.debug))
+    ns.PrintLine("Active mode: %s%s | bridge owns active destination: %s",
+        DescribeMode(sync.mode, sync.questID), sync.pending and " (transition in progress)" or "",
+        YesNo(sync.bridgeActive))
+    if sync.lastTransition then
+        ns.PrintLine("Last transition: %s%s", sync.lastTransition.text, Ago(sync.lastTransition.time))
+    end
+    if sync.lastFailure then
+        ns.PrintLine("Last failure/fallback: %s%s", sync.lastFailure.text, Ago(sync.lastFailure.time))
+    end
     if sync.lastSynced then
-        ns.PrintLine("Last synced: %s%s", ns.DescribeTarget(sync.lastSynced), Ago(sync.lastSynced.time))
+        local prefix = sync.lastSynced.mode == "native"
+            and format("[%s] ", DescribeMode("native", sync.lastSynced.questID)) or ""
+        ns.PrintLine("Last synced: %s%s%s", prefix, ns.DescribeTarget(sync.lastSynced), Ago(sync.lastSynced.time))
+        if sync.lastSynced.labelSource then
+            ns.PrintLine("Last synced label source: %s", sync.lastSynced.labelSource)
+        end
     else
         ns.PrintLine("Last synced: none this session")
     end
@@ -202,19 +251,44 @@ local function ToggleDebug()
     ns.Print("Debug messages %s.", OnOff(ns.db.debug))
 end
 
+local STRATEGY_ALIASES = {
+    coordinates = "coordinates", coordinate = "coordinates", coords = "coordinates",
+    hybrid = "hybrid",
+}
+
+local function SetStrategy(argument)
+    local strategy = STRATEGY_ALIASES[argument or ""]
+    if not strategy then
+        ns.Print("Navigation strategy: %s. Use /rxpwb mode coordinates or /rxpwb mode hybrid.", ns.db.strategy)
+        return
+    end
+    if not STRATEGIES[strategy] then return end
+    ns.db.strategy = strategy
+    if strategy == "hybrid" then
+        ns.Print("Navigation strategy: hybrid (experimental). Eligible quest turn-ins use native quest navigation.")
+    else
+        ns.Print("Navigation strategy: coordinates. All destinations use RestedXP coordinates.")
+    end
+    if not ns.db.autoSync then
+        ns.PrintLine("Automatic sync is off; the strategy applies to /rxpwb sync and when it is turned on.")
+    end
+    ns.Sync.OnStrategyChanged()
+end
+
 local commands = {
     status = ns.PrintStatus,
     sync = function() ns.Sync.SyncNow() end,
     on = EnableAutoSync,
     off = DisableAutoSync,
     debug = ToggleDebug,
+    mode = SetStrategy,
 }
 
 SLASH_RXPWAYPOINTBRIDGE1 = "/rxpwb"
 SlashCmdList.RXPWAYPOINTBRIDGE = function(input)
-    local command = (input or ""):match("^%s*(%S*)"):lower()
+    local command, argument = (input or ""):lower():match("^%s*(%S*)%s*(%S*)")
     local handler = commands[command] or ns.PrintHelp
-    local ok, err = pcall(handler)
+    local ok, err = pcall(handler, argument ~= "" and argument or nil)
     if not ok then
         ns.Print("Internal error: %s", tostring(err))
     end
@@ -242,7 +316,8 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
     local rxp = ns.RXP.GetStatus()
     local wui = ns.WUI.GetStatus()
 
-    ns.Print("v%s loaded (auto sync %s). Type /rxpwb for commands.", ns.GetVersion() or "?", OnOff(ns.db.autoSync))
+    ns.Print("v%s loaded (auto sync %s, strategy %s). Type /rxpwb for commands.",
+        ns.GetVersion() or "?", OnOff(ns.db.autoSync), ns.db.strategy)
     if not rxp.loaded then
         ns.PrintLine("RestedXP Guides (RXPGuides) is not loaded; sync is unavailable.")
     elseif not rxp.arrowAvailable then

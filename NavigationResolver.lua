@@ -203,10 +203,13 @@ Nav.DescribeInstruction = DescribeInstruction
 -- nothing but placeholder objectives (or nothing at all) is pending.
 -- Text-only lines (">>Kill X", "*Prioritize Y", .mob, .target) are
 -- descriptive headings/helpers and never block a quest objective.
-local function AnalyzeBlock(elements, first, last, via)
+-- allowMulti (v0.5.3): inside a #loop farming circuit, objectives of several
+-- quests are all relevant to the same area; return them as a "multi"
+-- candidate for SelectQuest instead of rejecting the block.
+local function AnalyzeBlock(elements, first, last, via, allowMulti)
     local firstAction, other
     local turnin, pendingTurnIns = nil, 0
-    local objectiveQuests, objectiveQuestCount = {}, 0
+    local quests, order = {}, {}
     local placeholders = 0
 
     for i = first, last do
@@ -219,11 +222,14 @@ local function AnalyzeBlock(elements, first, last, via)
             elseif IsObjective(e) then
                 firstAction = firstAction or "objective"
                 local q = e.questId
-                if not objectiveQuests[q] then
-                    objectiveQuests[q] = { title = e.title }
-                    objectiveQuestCount = objectiveQuestCount + 1
+                local info = quests[q]
+                if not info then
+                    info = { questID = q, title = e.title, objectiveSet = {}, steps = {}, firstPos = i }
+                    quests[q] = info
+                    order[#order + 1] = info
                 end
-                objectiveQuests[q][e.obj] = true
+                info.objectiveSet[e.obj] = true
+                if type(e.step) == "table" then info.steps[e.step] = true end
             elseif IsPlaceholder(e) then
                 placeholders = placeholders + 1
             elseif not e.textOnly then
@@ -250,20 +256,28 @@ local function AnalyzeBlock(elements, first, last, via)
     if other then
         return nil, format("waypoint also has a non-quest instruction (%s)", DescribeInstruction(other)), summary
     end
-    if objectiveQuestCount > 1 then
+
+    for _, info in ipairs(order) do
+        local objectives = {}
+        for obj in pairs(info.objectiveSet) do objectives[#objectives + 1] = obj end
+        sort(objectives)
+        info.objectives = objectives
+        info.objectiveSet = nil
+    end
+
+    if #order > 1 then
+        if allowMulti then
+            return { kind = "multi", quests = order, via = via }, nil, summary
+        end
         local ids = {}
-        for q in pairs(objectiveQuests) do ids[#ids + 1] = q end
+        for _, info in ipairs(order) do ids[#ids + 1] = info.questID end
         sort(ids)
         return nil, "multiple candidate quests (" .. concat(ids, ", ") .. ")", summary
     end
 
-    local questID, info = next(objectiveQuests)
-    local objectives = {}
-    for obj in pairs(info) do
-        if type(obj) == "number" then objectives[#objectives + 1] = obj end
-    end
-    sort(objectives)
-    return { kind = "objective", questID = questID, objectives = objectives, via = via }, nil, summary
+    local info = order[1]
+    return { kind = "objective", questID = info.questID, title = info.title, objectives = info.objectives,
+             steps = info.steps, via = via }, nil, summary
 end
 
 -- RestedXP's active steps (GuideWindow.lua: RXPFrame.activeSteps = sticky
@@ -323,7 +337,7 @@ local function AnalyzeServedSteps(patrolStep)
         end
     end
     local via = format("patrol step %s serving step(s) %s", tostring(patrolStep.index), concat(indexes, ", "))
-    local candidate, reason = AnalyzeBlock(combined, 1, #combined, via)
+    local candidate, reason = AnalyzeBlock(combined, 1, #combined, via, true)
     if not candidate then
         return nil, format("%s: %s", via, reason)
     end
@@ -389,7 +403,7 @@ function Nav.FindQuestTarget(element)
         last = last + 1
     end
     local candidate, reason, summary = AnalyzeBlock(elements, first, last - 1,
-        step.loop and "loop circuit block" or "following block")
+        step.loop and "loop circuit block" or "following block", step.loop ~= nil)
     if candidate or not summary.onlyPlaceholders then
         if candidate and step.loop ~= nil then candidate.references = CircuitPoints(step) end
         return candidate, reason
@@ -748,6 +762,153 @@ function Nav.VerifyNative(target, questID, tolerance, references)
 end
 
 --------------------------------------------------------------------------------
+-- Quest selection inside a shared farming circuit (v0.5.3)
+--
+-- When a #loop circuit (own step or patrol step) serves objectives of several
+-- quests, every quest is relevant to the area; only the order is open.
+-- RestedXP has no structured priority field (no #track in the Forever
+-- guides; "Prioritize them" is plain guide text), so the order is:
+--   1. explicit priority: a text-only line starting with "Prioritize" in a
+--      step whose pending objectives all belong to ONE candidate quest
+--      (English guide text; other locales simply skip this rule)
+--   2. RestedXP's current step: the non-sticky active step (sticky
+--      #completewith steps are background work that finishes with it)
+--   3. keep the quest already tracked (by the bridge, else by WoW) if it is
+--      still an eligible candidate: avoids needless switching
+--   4. RestedXP's guide order (lowest step index, then line order)
+-- Every candidate must pass CheckObjective (in log, unfinished, coverage).
+-- Candidates whose native target recently failed verification are skipped.
+--------------------------------------------------------------------------------
+
+local function IsPriorityLine(element)
+    if element.tag ~= nil or not element.textOnly or type(element.text) ~= "string" then return nil end
+    local text = ns.Label.Clean(element.text)
+    if text and text:lower():find("^prioriti[sz]e") then return text end
+    return nil
+end
+
+-- Quest IDs with pending objectives or turn-ins in a step.
+local function PendingQuests(step)
+    local set, count = {}, 0
+    for _, e in ipairs(step.elements or {}) do
+        if type(e) == "table" and not IsDone(e) and (IsObjective(e) or IsTurnIn(e)) and not set[e.questId] then
+            set[e.questId] = true
+            count = count + 1
+        end
+    end
+    return set, count
+end
+
+local function IsCurrentStep(step)
+    return step.active and not step.sticky and step.completewith == nil
+end
+
+-- Priority text that applies to exactly this candidate's quest, or nil.
+local function PriorityFor(entry)
+    for step in pairs(entry.steps or {}) do
+        local quests, count = PendingQuests(step)
+        if count == 1 and quests[entry.questID] then
+            for _, e in ipairs(step.elements or {}) do
+                local text = type(e) == "table" and IsPriorityLine(e)
+                if text then return text, step end
+            end
+        end
+    end
+    return nil
+end
+
+local function CurrentStepFor(entry)
+    for step in pairs(entry.steps or {}) do
+        if IsCurrentStep(step) then return step end
+    end
+    return nil
+end
+
+local function MinStepIndex(entry)
+    local best
+    for step in pairs(entry.steps or {}) do
+        if type(step.index) == "number" and (not best or step.index < best) then best = step.index end
+    end
+    return best or math.huge
+end
+
+-- Returns selected entry (or nil), selection reason, list of all entries.
+-- entry = { questID, title, objectives, steps, eligible, reason, classification,
+--           progress, questState, blocked, selected }
+local function SelectQuest(candidate, context)
+    context = context or {}
+    local list, eligible = {}, {}
+    for _, info in ipairs(candidate.quests) do
+        local qs = Nav.GetQuestState(info.questID, true)
+        local ok, reason, classification, progress = CheckObjective(info, qs)
+        local entry = {
+            questID = info.questID, title = qs.title or info.title, objectives = info.objectives,
+            steps = info.steps, firstPos = info.firstPos, eligible = ok, reason = reason,
+            classification = classification, progress = progress, questState = qs,
+        }
+        if ok and context.blockedReason then
+            local blocked = context.blockedReason("objective:" .. tostring(info.questID), progress)
+            if blocked then
+                entry.eligible = false
+                entry.blocked = true
+                entry.reason = "native target failed verification recently: " .. blocked
+            end
+        end
+        list[#list + 1] = entry
+        if entry.eligible then eligible[#eligible + 1] = entry end
+    end
+
+    local function pick(entry, why)
+        entry.selected = true
+        return entry, why, list
+    end
+
+    if #eligible == 0 then return nil, "no eligible candidate quest", list end
+    if #eligible == 1 then return pick(eligible[1], "only eligible candidate") end
+
+    local prioritized, text
+    for _, entry in ipairs(eligible) do
+        local found = PriorityFor(entry)
+        if found then
+            if prioritized then prioritized = false break end
+            prioritized, text = entry, found
+        end
+    end
+    if prioritized then return pick(prioritized, format("explicit RestedXP priority (\"%s\")", text)) end
+
+    local current, currentStep
+    for _, entry in ipairs(eligible) do
+        local step = CurrentStepFor(entry)
+        if step then
+            if current then current = false break end
+            current, currentStep = entry, step
+        end
+    end
+    if current then return pick(current, format("RestedXP's current step %s", tostring(currentStep.index))) end
+
+    local supertracked = Nav.GetSuperTrackedQuest()
+    for _, entry in ipairs(eligible) do
+        if context.currentQuest and entry.questID == context.currentQuest then
+            return pick(entry, "already tracked by the bridge")
+        end
+    end
+    for _, entry in ipairs(eligible) do
+        if supertracked and entry.questID == supertracked then
+            return pick(entry, "already supertracked")
+        end
+    end
+
+    sort(eligible, function(a, b)
+        local ia, ib = MinStepIndex(a), MinStepIndex(b)
+        if ia ~= ib then return ia < ib end
+        return (a.firstPos or 0) < (b.firstPos or 0)
+    end)
+    local first = eligible[1]
+    local index = MinStepIndex(first)
+    return pick(first, format("first in RestedXP's guide order (step %s)", index == math.huge and "?" or tostring(index)))
+end
+
+--------------------------------------------------------------------------------
 -- Decision
 --------------------------------------------------------------------------------
 
@@ -758,10 +919,14 @@ end
 --   kind            "turnin" or "objective" (when a candidate was found)
 --   classification  "turn-in", "kill", "collect", "interact", ...
 --   questID, questName, questState, objectives, progress, pendingTurnIns
+--   candidates      (shared circuit only) every candidate quest with its state
+--   selection       (shared circuit only) why the selected quest won
 --   nativeId        identity of the native state (Sync compares it)
 --   tolerance       verification tolerance for this kind
+--   references      circuit points for verification (#loop / patrol)
 --   analysis        "hybrid" or "native-first" (which resolver produced it)
-function Nav.Decide(target, strategy)
+-- context (optional, from Sync): { currentQuest, blockedReason(nativeId, progress) }
+function Nav.Decide(target, strategy, context)
     local useHybrid = strategy == "hybrid"
     local decision = { mode = "coordinates", nativeEligible = false,
                        analysis = useHybrid and "hybrid" or "native-first" }
@@ -775,6 +940,33 @@ function Nav.Decide(target, strategy)
 
     if not candidate then
         decision.reason = why
+    elseif candidate.kind == "multi" then
+        decision.kind = "objective"
+        decision.tolerance = Nav.OBJECTIVE_TOLERANCE
+        decision.references = candidate.references
+        if not Nav.IsNativeSupported() then
+            decision.reason = "native quest supertracking is not available in this client"
+        else
+            local selected, selection, list = SelectQuest(candidate, context)
+            decision.candidates = list
+            decision.selection = selection
+            if not selected then
+                decision.reason = format("%s: %s", candidate.via, selection)
+            else
+                decision.questID = selected.questID
+                decision.questName = selected.title
+                decision.questState = selected.questState
+                decision.objectives = selected.objectives
+                decision.progress = selected.progress
+                decision.classification = selected.classification or "objective"
+                decision.nativeEligible = true
+                decision.reason = format("quest objective eligible (%s); selected quest %d: %s",
+                    candidate.via, selected.questID, selection)
+            end
+        end
+        if decision.questID then
+            decision.nativeId = format("objective:%s", tostring(decision.questID))
+        end
     else
         local q = candidate.questID
         decision.kind = candidate.kind
@@ -820,6 +1012,16 @@ function Nav.Decide(target, strategy)
             -- v0.5 identity: what is tracked, not where RestedXP's point is, so
             -- RestedXP cycling #loop points does not re-supertrack the quest.
             decision.nativeId = format("%s:%s", candidate.kind, tostring(q))
+        end
+
+        -- A native target that recently failed verification is not retried
+        -- until Sync's retry conditions are met.
+        if decision.nativeEligible and context and context.blockedReason then
+            local blocked = context.blockedReason(decision.nativeId, decision.progress)
+            if blocked then
+                decision.nativeEligible = false
+                decision.reason = "native target failed verification recently: " .. blocked
+            end
         end
     end
 

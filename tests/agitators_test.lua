@@ -47,13 +47,17 @@ local stepAgitators = newStep(29, {},
 quests[92465] = { title = "Agitators", ready = false, poi = 45, objectives = { kill(3, 7), kill(3, 6) } }
 quests[93552] = { title = "Harvesting Windstones", ready = false, poi = 46, objectives = { object(9, 15) } }
 
--- Test D: Windstone still running alongside Agitators -> two quests -> coordinates
+-- Test D (v0.5.3): Windstone still running alongside Agitators -> both quests are
+-- relevant to the shared patrol; Agitators wins (its step says "Prioritize ...").
 H.setActiveSteps(stepPatrol, stepWindstone, stepAgitators)
 point(patrol[3]); advance(1.5)
-check("D: patrol serving Windstone and Agitators -> coordinates", H.mode() == "coordinates" and st.setQuestCalls == 0)
-check("D: reason names the patrol step and both quests",
-  H.lastChat("patrol step 27 serving step%(s%) 28, 29: multiple candidate quests %(92465, 93552%)") ~= nil)
-check("label for the patrol waypoint is not the \"+1\" placeholder", wui.nav and wui.nav.name ~= "1", wui.nav and wui.nav.name)
+check("D: shared patrol with two quests selects one instead of falling back", H.mode() == "native" and select(2, H.mode()) == 92465)
+check("D: both candidates are listed",
+  H.lastChat("Candidate 92465 %(Agitators%) obj 1 3/7, obj 2 3/6 %- eligible %[selected%]") ~= nil
+  and H.lastChat("Candidate 93552 %(Harvesting Windstones%) obj 1 9/15 %- eligible") ~= nil)
+check("D: selection reason is RestedXP's explicit priority",
+  H.lastChat("selected quest 92465: explicit RestedXP priority %(\"Prioritize Roiling Winds\"%)") ~= nil)
+check("label for the patrol waypoint is not the \"+1\" placeholder", ns.RXP.GetTarget().label ~= "1", ns.RXP.GetTarget().label)
 check("hybrid still sees an intermediate route point here",
   ns.Nav.Decide(ns.RXP.GetTarget(), "hybrid").reason:find("pass%-through") ~= nil)
 
@@ -62,7 +66,7 @@ windstoneObjective.completed = true
 quests[93552].objectives[1] = done("object", 15); quests[93552].ready = true
 H.fire("QUEST_LOG_UPDATE"); advance(1.5)
 local m, q, kind = H.mode()
-check("E/A: completed Windstone ignored, Agitators goes native via the patrol step", m == "native" and q == 92465 and kind == "objective", m)
+check("E/A: completed Windstone ignored, Agitators stays native (no switch)", m == "native" and q == 92465 and kind == "objective", m)
 check("A: classified as a kill objective with both objectives targeted",
   H.lastChat("quest objective detected: kill quest 92465 %(Agitators%) %- obj 1 3/7, obj 2 3/6") ~= nil)
 check("A: decision reason shows the patrol association",
@@ -164,12 +168,16 @@ local stepShaman = newStep(60, { loop = "" }, s1, s2,
   H.complete(92465, 1), H.mob("+Al'Aketh Convert::251160"), H.complete(92465, 2), H.mob("+Roiling Winds::251143"), signet)
 H.setActiveSteps(stepShaman)
 point(s1); advance(2)
-check("D/F: loop with two quests (Agitators + Signet) -> coordinates", H.mode() == "coordinates"
-  and H.lastChat("multiple candidate quests %(92465, 92466%)") ~= nil)
+-- v0.5.3: both quests share this #loop farming circuit. The priority line sits in
+-- a step with two quests (so it is not quest-level), the step is current for
+-- both, nothing is tracked yet -> RestedXP's line order picks Agitators.
+check("D/F: loop with two quests selects by guide order", H.mode() == "native" and select(2, H.mode()) == 92465
+  and H.lastChat("selected quest 92465: first in RestedXP's guide order %(step 60%)") ~= nil)
+local callsDF = st.setQuestCalls
 signet.completed = true; quests[92466].objectives[1].finished = true
 H.fire("QUEST_LOG_UPDATE"); advance(2)
-check("F: loop with descriptive text between waypoints and objectives -> native once only Agitators remains",
-  H.mode() == "native" and select(2, H.mode()) == 92465)
+check("F: Signet finishing leaves Agitators tracked without re-supertracking",
+  H.mode() == "native" and select(2, H.mode()) == 92465 and st.setQuestCalls == callsDF)
 
 ----------------------------------------------------------------------------
 -- In-game log (v0.5.1): arrow on patrol point 1 at 161 yd while the player is

@@ -4,7 +4,7 @@ A World of Warcraft Forever addon that makes **RestedXP Guides** and **Waypoint 
 
 RestedXP decides where you should go. Waypoint UI shows you how to get there and what to do there. Where it fits, Blizzard's own quest marker does the pointing.
 
-> Status: **0.5.2, native-first quest navigation (experimental).** There are three strategies:
+> Status: **0.5.3, native-first quest navigation (experimental).** There are three strategies:
 > - `coordinates`: always RestedXP coordinates.
 > - `hybrid`: native quest marker for turn-ins (v0.4, tested in game).
 > - `native-first`: native quest marker for turn-ins **and** quest objectives RestedXP is leading you to (v0.5).
@@ -48,7 +48,8 @@ RestedXP arrow waypoint
        ├─ only .complete objectives of ONE quest, nothing else pending
        │     ─► quest in log, not complete, every unfinished objective of the quest
        │        is one RestedXP targets here? .................................... native objective
-       └─ anything else (two quests, an accept, a non-quest instruction, ...) ...... coordinates
+       ├─ objectives of SEVERAL quests inside a #loop farming circuit ─► pick one (below) native objective
+       └─ anything else (two quests outside a loop, an accept, a non-quest instruction) coordinates
   then: supertrack the quest and verify a native target exists and is consistent;
         if not ─► release the quest and fall back to coordinates
 ```
@@ -66,6 +67,17 @@ The **instruction block** comes from RestedXP's own structure:
 Descriptive lines such as `>>Kill X and Y` or `*Prioritize Y` are headings and never block an objective.
 
 **Arrival radius is not used to classify waypoints in native-first.** `.goto x,y,7,0` before "Click on the Crystals" (Windstone Clusters) is the objective area, while `.goto a,8,0` → `.goto b,8,0` → `.goto c` before a kill is a route.
+
+**Several quests in one farming circuit (0.5.3).** When a `#loop` circuit serves objectives of more than one quest, all of them are relevant to the area, and only the order is open. This applies whether the circuit is in the waypoint's own step or in a patrol step serving others. For example, the Skyborne patrol serves Step 5 (Juvenile Vuldrens, *Harmony in Balance* 92461) and Step 6 (Pesky Cirrusflies, *Infestation Investigation* 92462).
+
+RestedXP has no structured priority field: no `#track` in the Forever guides, and "Prioritize them" is plain text. So every eligible candidate (in the log, unfinished, passing the coverage rule) is ranked like this:
+
+1. **Explicit priority:** a text line starting with "Prioritize" in a step whose pending objectives all belong to that one quest. This only matches English guide text; other locales skip to rule 2.
+2. **RestedXP's current step:** the non-sticky active step. `#completewith` steps are background work that finishes with it.
+3. **Keep what's already tracked:** the quest the bridge, or you, already tracks, if it's still a candidate.
+4. **Guide order:** lowest step, then line order.
+
+The choice only changes for a real reason: an objective finishes, RestedXP's steps change, a quest becomes ineligible, or a native check fails. Patrol points cycling and progress on the other quest don't change it. In the example, Infestation Investigation is tracked first. When the Cirrusflies are done, the bridge switches to Harmony in Balance, and turn-ins wait until RestedXP routes to them. Two quests in one step *without* a `#loop` still use coordinates.
 
 **Why the coverage rule matters.** Blizzard picks its own marker among a quest's unfinished objectives. If the quest still has an objective RestedXP plans to do somewhere else, the native marker could lead there instead, so the bridge stays on coordinates.
 
@@ -134,6 +146,7 @@ These run the real addon files against mocked RestedXP, Waypoint UI and WoW APIs
 - `hybrid_test.lua`: the v0.4 strategy, as a regression test.
 - `native_first_test.lua`: step structures taken from the installed Forever guides.
 - `agitators_test.lua`: the Skyborne Agitators patrol step and its neighbours.
+- `vuldren_test.lua`: the Skyborne Steps 4–7 circuit (quest prioritization, switching, next-candidate fallback, retries, travel protection, manual hold).
 
 They don't prove in-game behaviour.
 
@@ -151,10 +164,10 @@ They don't prove in-game behaviour.
 
 ## Known limitations
 
-- **Patrol areas shared by two quests stay on coordinates.** In Skyborne, Windstone Clusters and Agitators share a patrol. Native tracking starts once only one quest's objectives remain.
 - **Objectives with no RestedXP waypoint at all aren't handled.** The bridge only follows the arrow's waypoint and keeps the previous navigation when RestedXP has none.
 - **`.collect` isn't eligible.** Item collection may not be a quest-log objective. `.complete` objectives only.
-- **The two quests' order isn't known.** When two quests share an area, coordinates are used.
+- **The "Prioritize" rule is English-only.** It reads guide text; RestedXP has no priority field. Without it, the current step or guide order decides.
+- **Failed native targets retry on a timer.** A quest whose native target failed is retried after 60 seconds, or after 10 seconds if its progress changed, but only when an evaluation runs anyway. Zoning or changing strategy also clears failures.
 - **Verification can only reject.** It can't prove the native marker is on the exact mob or object RestedXP means. The main evidence is RestedXP's own waypoint-to-objective link.
 - **Switching between coordinates and native briefly removes the marker**, for about 0.25 seconds plus Waypoint UI's animation.
 - **RestedXP may supertrack other quests by itself.** The bridge records that and doesn't fight it.
@@ -168,7 +181,7 @@ They don't prove in-game behaviour.
 2. 0.2: automatic route mirroring (done).
 3. 0.3: step descriptions (done).
 4. 0.4: hybrid navigation for turn-ins (done, tested in game).
-5. **0.5: native-first quest navigation** (this version, experimental; 0.5.1 adds patrol steps and `/rxpwb inspect`; 0.5.2 checks patrols against the whole circuit).
+5. **0.5: native-first quest navigation** (this version, experimental; 0.5.1 adds patrol steps and `/rxpwb inspect`; 0.5.2 checks patrols against the whole circuit; 0.5.3 picks a quest when several share a farming circuit).
 6. Next: validate native-first in game, tune the verification limits from the debug values, and decide the default strategy.
 7. 1.0: optional visual-only hiding of the RestedXP arrow, explicit pause and resume, world-coordinate targets, minimal settings, and validation against the launch client.
 

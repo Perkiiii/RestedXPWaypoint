@@ -2,7 +2,7 @@
 ## Title: RXP Waypoint Bridge
 ## Notes: Automatically sends RestedXP Guides waypoints and instructions to Waypoint UI, with optional native quest navigation for turn-ins and objectives.
 ## Author: RXP Waypoint Bridge contributors
-## Version: 0.5.2
+## Version: 0.5.3
 ## Category: Quests
 ## OptionalDeps: RXPGuides, WaypointUI
 ## SavedVariables: RXPWaypointBridgeDB

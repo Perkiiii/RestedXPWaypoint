@@ -127,7 +127,7 @@ The load order is set in the `.toc`. All modules share the addon namespace `ns`.
 | `NavigationResolver.lua` | `ns.Nav` | Structure-only analysis, testable offline: `FindTurnIn(element)` (hybrid, unchanged since v0.4) and `FindQuestTarget(element)` (native-first: turn-ins and `.complete` objectives). `GetQuestState(questID, withObjectives)`. `Decide(target, strategy)` returns `{ mode, reason, nativeEligible, kind, classification, questID, questName, questState, objectives, progress, pendingTurnIns, nativeId, tolerance, analysis }`. Native wrappers: `SetNativeQuest()`, `ReleaseNativeQuest()` (only if still supertracked), `IsNativeQuestActive()`, `VerifyNative()`. Reads RestedXP step data and calls `C_SuperTrack`, `C_QuestLog` and `C_Navigation`. |
 | `WaypointAdapter.lua` | `ns.WUI` | **Only** place that calls Waypoint UI. `SetNavigation()` (passes `stripCoordinates`), `GetNavigation()`, `IsShowingTarget()` (coordinates), `HasTargetLabel()`, `IsOwnedNavigationTracked()`, `ClearOwnedNavigation()` (bridge-owned only), `GetForeignNavigationName()`, `DescribeOutsideNavigation(expectedQuestID)`. |
 | `Sync.lua` | `ns.Sync` | The single controller. `Initialize()`, `Start()`/`Stop()`, `SyncNow()`, `OnStrategyChanged()`, `GetState()`. |
-| `tests/` | — | `node tests/run.js` runs `*_test.lua` in fengari against mocked APIs (`npm install --prefix tests` once). The files are `label_test.lua`, `hybrid_test.lua` (the v0.4 regression suite, self-contained; keep it passing unchanged), `native_first_test.lua` and `agitators_test.lua` (the Skyborne patrol-step fixtures). The last two use the shared mocks in `harness.lua`, including `RXPFrame.activeSteps` via `H.setActiveSteps`; `H.verbose` prints debug output on failures. WoW ignores this folder because it isn't in the `.toc`. **Update or extend these tests whenever you change resolver or sync behaviour.** |
+| `tests/` | — | `node tests/run.js` runs `*_test.lua` in fengari against mocked APIs (`npm install --prefix tests` once). The files are `label_test.lua`, `hybrid_test.lua` (the v0.4 regression suite, self-contained; keep it passing unchanged), `native_first_test.lua`, `agitators_test.lua` (the Skyborne patrol-step fixtures) and `vuldren_test.lua` (quest prioritization in a shared circuit). The last three use the shared mocks in `harness.lua`, including `RXPFrame.activeSteps` via `H.setActiveSteps`; `H.verbose` prints debug output on failures. WoW ignores this folder because it isn't in the `.toc`. **Update or extend these tests whenever you change resolver or sync behaviour.** |
 
 ### Sync rules (keep these invariants)
 
@@ -168,6 +168,11 @@ The load order is set in the `.toc`. All modules share the addon namespace `ns`.
   - `VerifyNative` uses the smallest `|native − point|` across those points. That is still a lower bound on the native target's distance to the circuit.
   - Reason: RestedXP's arrow can sit on the far side of the loop. In game, the arrow point was 161 yd away while Blizzard's marker was 22 yd away inside the area. The old single-point check falsely rejected it with a 139 yd gap.
   - Other candidates still compare against the arrow element only.
+- **Retrying failed native targets (v0.5.3):** `nativeFailed[id] = { reason, time, progress }`.
+  - `Sync.GetDecisionContext()` passes `blockedReason` = `NativeBlocked` and `currentQuest` to `Nav.Decide`. `Decide` applies `blockedReason` to single candidates; `SelectQuest` applies it to multi candidates.
+  - A failure blocks retries until `NATIVE_RETRY_COOLDOWN` (60 s) passes, or the progress changes after `NATIVE_RETRY_MIN` (10 s). Zoning or a strategy change also clears it. There is no retry timer.
+  - `FailNative` first re-decides, and if another candidate is eligible it goes to it native → native. Only otherwise does it fall back to coordinates.
+- **Manual hold (v0.5.3):** while a non-bridge Waypoint UI navigation is tracked, native → native switches are held regardless of the destination key, because switching quests inside a circuit is not a new RestedXP destination.
 - **Verification tolerance comes from `decision.tolerance`:** `TURNIN_TOLERANCE` is 50 yd, `OBJECTIVE_TOLERANCE` is 100 yd. Every verification logs the native and RestedXP distances, the gap and the limit in debug mode.
 
 ### Native-first rules (keep these invariants; see the header of `NavigationResolver.lua`)
@@ -179,7 +184,8 @@ The load order is set in the `.toc`. All modules share the addon namespace `ns`.
 - **Block outcome:**
   - The first pending instruction is a `.turnin` → turn-in candidate.
   - The block's pending instructions are `.complete` objectives of exactly one quest, with no other pending action → objective candidate.
-  - Anything else (two quests, an accept, a `+text` objective, `.collect`, ...) → coordinates.
+  - Objectives of several quests inside a `#loop` circuit → a multi candidate for `SelectQuest` (v0.5.3).
+  - Anything else (several quests outside a loop, an accept, a `+text` objective, `.collect`, ...) → coordinates.
 - **Objective eligibility:**
   - The quest is in the log and not complete.
   - `GetQuestObjectives` is available.
@@ -190,17 +196,22 @@ The load order is set in the `.toc`. All modules share the addon namespace `ns`.
   - A served step with its own pending waypoint → coordinates.
   - Real `+text` objectives never delegate. Neither does a non-sticky loop.
 - Text-only headings (`>>text`, `*text`, `.mob`, `.target`, `.macro`) never block an objective.
-- Never classify by quest names or text, and never pick the first of several quests.
+- **Several quests in a farming circuit (v0.5.3):** `AnalyzeBlock(..., allowMulti)` is true only for own-step `#loop` blocks and patrol delegation. It returns `kind = "multi"` with one entry per quest: `objectives`, `steps`, `firstPos`. Outside loops, several quests are still ambiguous → coordinates.
+  - `SelectQuest` checks every quest with `CheckObjective` and skips blocked ones. It then ranks: (1) a text-only line starting with "Prioritize" in a step whose pending quests are exactly that quest (English guide text; RestedXP has no priority field and no `#track` in the Forever guides); (2) RestedXP's current step (active, not sticky, no `completewith`); (3) `context.currentQuest` (the bridge), then the WoW-supertracked quest; (4) guide order (lowest step index, then line order).
+  - `decision.candidates` lists every quest's state; `decision.selection` says why the winner won.
+  - The selected quest's identity is `objective:Q`, so objective completion switches native → native.
+- Never classify by quest names, and never pick between quests outside a `#loop` circuit.
 - **Manual waypoints:** while a non-bridge Waypoint UI navigation is tracked, mode changes at the same destination key are held. A new destination key resumes, as in v0.2.
 - **RestedXP supertracking:** RestedXP supertracking the bridge's own native quest is not an outside change (`DescribeOutsideNavigation(expectedQuestID)`). Other quests RestedXP supertracks are recorded as outside changes and never fought.
 
-## Current state (0.5.2)
+## Current state (0.5.3)
 
 - v0.2 coordinate mirroring and v0.4 hybrid turn-ins have passed in-game tests; the developer was happy with hybrid. Commit `5dd7752` is the v0.4 checkpoint.
 - v0.5 adds the experimental `native-first` strategy. It needs in-game acceptance, and its verification limits may need tuning from the debug values.
 - v0.5.1 fixes native-first on RestedXP patrol steps (the Agitators bug) and adds `/rxpwb inspect`. `Sync` records `lastVerification`, so verification failures show up separately from classification failures.
 - The label cleaner requires a letter, so `+1` is never a label.
 - v0.5.2 checks a patrol's native target against the whole circuit, which fixed the in-game false rejection on Agitators.
+- v0.5.3 picks a quest when several share a farming circuit, and retries failed native targets on a policy instead of blocking them until zoning.
 - `coordinates` and `hybrid` behaviour is unchanged.
 - Offline tests (`node tests/run.js`) cover labels, hybrid (as regression), and native-first: kill, collect and interact classification, loops, route chains, parent-linked blocks, ambiguity, coverage, verification and tolerance, objective → turn-in, progress events, manual overrides, stale callbacks and strategy switching. The mocks assume WoW supertracks one target at a time; that is unverified in Forever.
 

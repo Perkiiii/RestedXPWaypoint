@@ -34,7 +34,7 @@ function H.fire(event, ...) for _, f in ipairs(frames) do if f.events[event] and
 H.chat = {}
 DEFAULT_CHAT_FRAME = { AddMessage = function(_, m) table.insert(H.chat, m) end }
 SlashCmdList = {}
-C_AddOns = { IsAddOnLoaded = function() return true end, GetAddOnMetadata = function(a) return a == "RXPWaypointBridge" and "0.5.2" or "x" end }
+C_AddOns = { IsAddOnLoaded = function() return true end, GetAddOnMetadata = function(a) return a == "RXPWaypointBridge" and "0.5.3" or "x" end }
 C_Map = { GetMapInfo = function(id) return { name = "Map" .. id } end, CanSetUserWaypointOnMap = function() return true end }
 
 local st = { quest = nil, user = false, setQuestCalls = 0 }

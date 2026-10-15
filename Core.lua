@@ -149,6 +149,19 @@ local function DescribeMode(mode, questID, kind)
     return mode or "none"
 end
 
+-- Candidate lines for a shared-circuit (multi-quest) decision.
+local function PrintCandidates(decision)
+    if not decision.candidates then return end
+    for _, c in ipairs(decision.candidates) do
+        ns.PrintLine("Candidate %d: %s%s - %s%s", c.questID, tostring(c.title or "?"),
+            c.progress and (" - " .. c.progress) or "", c.eligible and "eligible" or tostring(c.reason),
+            c.selected and " [selected]" or "")
+    end
+    if decision.questID and decision.selection then
+        ns.PrintLine("Selected %d: %s", decision.questID, decision.selection)
+    end
+end
+
 function ns.PrintStatus()
     local rxp = ns.RXP.GetStatus()
     local wui = ns.WUI.GetStatus()
@@ -184,7 +197,8 @@ function ns.PrintStatus()
         ns.PrintLine("Ready to sync: %s - %s", YesNo(false), reason)
     else
         ns.PrintLine("Ready to sync: %s", YesNo(wui.apiAvailable))
-        local decision = ns.Nav.Decide(target, ns.db.strategy)
+        local decision = ns.Nav.Decide(target, ns.db.strategy, ns.Sync.GetDecisionContext())
+        PrintCandidates(decision)
         if decision.questID then
             local qs = decision.questState or {}
             ns.PrintLine("Quest: %d (%s) | %s | in log: %s | ready for turn-in: %s",
@@ -305,7 +319,8 @@ function ns.PrintInspect()
     end
     if reason then return end
 
-    local decision = ns.Nav.Decide(target, "native-first")
+    local decision = ns.Nav.Decide(target, "native-first", ns.Sync.GetDecisionContext())
+    PrintCandidates(decision)
     ns.PrintLine("Native-first analysis: %s - %s", YesNo(decision.nativeEligible), tostring(decision.reason))
     if decision.questID then
         ns.PrintLine("Candidate: quest %d (%s), %s%s", decision.questID, tostring(decision.questName or "?"),
@@ -313,7 +328,7 @@ function ns.PrintInspect()
             decision.progress and (", targets " .. decision.progress) or "")
     end
     if ns.db.strategy ~= "native-first" then
-        local current = ns.Nav.Decide(target, ns.db.strategy)
+        local current = ns.Nav.Decide(target, ns.db.strategy, ns.Sync.GetDecisionContext())
         ns.PrintLine("Current strategy (%s): %s - %s", ns.db.strategy,
             DescribeMode(current.mode, current.questID, current.kind), tostring(current.reason))
     end

@@ -74,6 +74,13 @@ local NATIVE_SET_DELAY = 0.25
 local NATIVE_VERIFY_DELAY = 0.6
 -- Lets RestedXP process quest events (mark turn-ins complete) first.
 local QUEST_EVAL_DELAY = 0.5
+-- A native target that failed verification is retried only after a
+-- meaningful change: NATIVE_RETRY_COOLDOWN has passed, or the quest's
+-- progress changed and at least NATIVE_RETRY_MIN has passed. Zoning and
+-- strategy changes clear failures. Retries only happen when an evaluation
+-- runs anyway (target change or quest event); there is no retry timer.
+local NATIVE_RETRY_COOLDOWN = 60
+local NATIVE_RETRY_MIN = 10
 
 local GetTime = GetTime
 local C_Timer = C_Timer
@@ -97,7 +104,7 @@ local state = {
     pendingNative = nil,     -- { id, questID } while a native transition runs
     generation = 0,          -- bumped on every transition
     failedKey = nil,         -- destination key Waypoint UI last rejected
-    nativeFailed = {},       -- [native id] = reason
+    nativeFailed = {},       -- [native id] = { reason, time, progress }
     lastSynced = nil,
     lastResult = nil,
     lastResultTime = nil,
@@ -171,6 +178,29 @@ function Sync.GetState()
     }
 end
 
+-- Returns the failure reason while a failed native target should not be
+-- retried, else nil (and forgets the failure). See NATIVE_RETRY_*.
+local function NativeBlocked(id, progress)
+    local failure = state.nativeFailed[id]
+    if not failure then return nil end
+    local age = GetTime() - failure.time
+    if age >= NATIVE_RETRY_COOLDOWN
+        or (progress ~= nil and failure.progress ~= nil and progress ~= failure.progress and age >= NATIVE_RETRY_MIN) then
+        state.nativeFailed[id] = nil
+        return nil
+    end
+    return failure.reason
+end
+
+-- Context for Nav.Decide: the bridge's current native quest (for keeping a
+-- suitable quest) and the retry policy for failed native targets.
+function Sync.GetDecisionContext()
+    return {
+        currentQuest = state.handledMode == "native" and state.handledQuest or nil,
+        blockedReason = NativeBlocked,
+    }
+end
+
 local function NoteStep(target)
     if target.stepIndex ~= state.lastStepIndex then
         ns.Debug("RXP waypoint changed: Step %s -> Step %s",
@@ -197,6 +227,13 @@ local function LogDecision(target, decision)
             ns.Debug("Step %s: turn-in candidate quest %d (%s) - in log: %s, ready: %s",
                 tostring(target.stepIndex or "-"), decision.questID, tostring(decision.questName or "?"),
                 qs.inLog and "yes" or "no", qs.ready and "yes" or "no")
+        end
+    end
+    if decision.candidates then
+        for _, c in ipairs(decision.candidates) do
+            ns.Debug("  Candidate %d (%s)%s - %s%s", c.questID, tostring(c.title or "?"),
+                c.progress and (" " .. c.progress) or "", c.eligible and "eligible" or tostring(c.reason),
+                c.selected and " [selected]" or "")
         end
     end
     if decision.mode == "native" then
@@ -288,18 +325,29 @@ end
 
 local BeginNative
 
-local function FailNative(target, questID, id, why, announce)
+local function FailNative(target, questID, id, why, announce, progress)
     state.pendingNative = nil
-    state.nativeFailed[id] = why
+    state.nativeFailed[id] = { reason = why, time = GetTime(), progress = progress }
     NoteFailure(format("native quest %d: %s", questID, why))
+
+    -- RestedXP's current destination (it may have moved on).
+    local current, reason = RXP.GetTarget()
+    if reason or not current then current = target end
+
+    -- In a shared farming circuit another eligible quest may still work.
+    local nextDecision = Nav.Decide(current, ns.db.strategy, Sync.GetDecisionContext())
+    if nextDecision.mode == "native" and nextDecision.nativeId ~= id then
+        ns.Debug("Native verification failed for quest %d (%s); trying the next candidate, quest %d.",
+            questID, why, nextDecision.questID)
+        state.lastDecision = nextDecision
+        BeginNative(current, nextDecision, "next candidate", announce)
+        return
+    end
+
     ns.Debug("Native verification failed after classification passed (%s); falling back to coordinates.", why)
     if announce then
         ns.Print("Native quest navigation unavailable (%s); using RestedXP coordinates.", why)
     end
-
-    -- Fall back to RestedXP's current destination (it may have moved on).
-    local current, reason = RXP.GetTarget()
-    if reason or not current then current = target end
     local ok, err = ToCoordinates(current, "native fallback", true)
     if not ok then
         NoteFailure(format("native quest %d: %s; coordinate fallback failed: %s", questID, why, err))
@@ -336,7 +384,7 @@ BeginNative = function(target, decision, how, announce)
             m and m.points and format(" (nearest of %d patrol points)", m.points) or "",
             m and m.gap and format("%.1f", m.gap) or "?", tostring(m and m.tolerance or "?"))
         if not ok then
-            FailNative(target, questID, id, detail, announce)
+            FailNative(target, questID, id, detail, announce, decision.progress)
             return
         end
         state.pendingNative = nil
@@ -364,7 +412,7 @@ BeginNative = function(target, decision, how, announce)
     local function SetQuest()
         if generation ~= state.generation then return end
         if not Nav.SetNativeQuest(questID) then
-            FailNative(target, questID, id, "SetSuperTrackedQuestID failed", announce)
+            FailNative(target, questID, id, "SetSuperTrackedQuestID failed", announce, decision.progress)
             return
         end
         C_Timer.After(NATIVE_VERIFY_DELAY, Verify)
@@ -482,20 +530,17 @@ local function Evaluate(trigger)
     state.lastInvalidReason = nil
     NoteStep(target)
 
-    local decision = Nav.Decide(target, ns.db.strategy)
-    if decision.mode == "native" then
-        local failed = state.nativeFailed[decision.nativeId]
-        if failed then
-            decision.mode = "coordinates"
-            decision.reason = "native target failed verification earlier: " .. failed
-        end
-    end
+    local decision = Nav.Decide(target, ns.db.strategy, Sync.GetDecisionContext())
     state.lastDecision = decision
     LogDecision(target, decision)
 
     -- Hold mode changes at an unchanged destination while the player follows
     -- a waypoint the bridge did not create (it resumes on a new destination).
-    if state.handledMode and target.key == state.handledKey then
+    -- A native -> native switch (e.g. the next quest in a farming circuit) is
+    -- not a new RestedXP destination, so it is held too, whatever point the
+    -- patrol arrow is on.
+    if state.handledMode and (target.key == state.handledKey
+        or (state.handledMode == "native" and decision.mode == "native")) then
         local wantId = decision.mode == "native" and decision.nativeId or nil
         local modeChange = decision.mode ~= state.handledMode
             or (decision.mode == "native" and wantId ~= state.handledId)
@@ -640,7 +685,7 @@ function Sync.SyncNow()
     end
 
     NoteStep(target)
-    local decision = Nav.Decide(target, ns.db.strategy)
+    local decision = Nav.Decide(target, ns.db.strategy, Sync.GetDecisionContext())
     state.lastDecision = decision
     if decision.mode == "native" then
         ns.Print("Switching to native quest navigation for %s...", decision.questName or ("quest " .. decision.questID))

@@ -1,0 +1,16 @@
+# OS clutter
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Editor / local tooling
+*.code-workspace
+.luarc.json
+node_modules/
+
+# Packaging output
+*.zip
+/.release/
+
+# Logs
+*.log

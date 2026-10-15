@@ -2,19 +2,20 @@
 
 A World of Warcraft Forever addon that makes **RestedXP Guides** and **Waypoint UI** work as one navigation system.
 
-RestedXP decides where you should go. Waypoint UI shows you how to get there and what to do there.
+RestedXP decides where you should go. Waypoint UI shows you how to get there and what to do there. Where it fits, Blizzard's own quest marker does the pointing.
 
-> Status: **0.4.0, hybrid navigation (experimental).**
-> - Waypoint UI follows RestedXP's arrow automatically and labels each waypoint with RestedXP's instruction.
-> - With `/rxpwb mode hybrid`, eligible quest turn-ins use WoW's native quest marker (quest title, "Ready for turn-in"), and everything else stays on RestedXP's coordinates.
-> - The default strategy is still `coordinates` until hybrid has been validated in game.
+> Status: **0.5.2, native-first quest navigation (experimental).** There are three strategies:
+> - `coordinates`: always RestedXP coordinates.
+> - `hybrid`: native quest marker for turn-ins (v0.4, tested in game).
+> - `native-first`: native quest marker for turn-ins **and** quest objectives RestedXP is leading you to (v0.5).
+>
+> Your saved strategy is kept. Nobody is switched to native-first automatically.
 
 ## Design goals
 
-- **RestedXP's route is authoritative.** The bridge mirrors the waypoint RestedXP has already chosen (`RXPG_ARROW.element`). It never re-plans the route and never skips intermediate waypoints.
-- **Waypoint UI is the renderer.** The bridge uses only Waypoint UI's documented public API (`WaypointUIAPI.Navigation`), plus WoW's own `C_SuperTrack` for native quests.
-- **Native quest navigation only with evidence.** A turn-in goes native only when RestedXP's own data ties the current arrow waypoint to that turn-in, and the quest is ready. When in doubt, it uses coordinates.
-- **Labels must be accurate.** When the link between waypoint and instruction is unclear, the bridge shows "Step N".
+- **RestedXP's route is authoritative.** The bridge mirrors the waypoint RestedXP has chosen (`RXPG_ARROW.element`). Intermediate route waypoints are always followed with coordinates.
+- **Prefer Blizzard's marker only when it fits.** Native quest tracking is used when RestedXP's own guide data ties the current waypoint to one quest objective or turn-in, and the quest log confirms it. In every other case the bridge uses RestedXP's coordinates.
+- **Waypoint UI is the renderer.** The bridge uses only Waypoint UI's documented public API (`WaypointUIAPI.Navigation`), plus WoW's `C_SuperTrack` for native quests. Waypoint UI draws the quest name, progress and "Ready for turn-in" itself.
 - **Small, safe and cheap.** Writes happen only when the desired navigation changes. There are no loops and no fights with the player.
 
 ## Requirements
@@ -26,91 +27,91 @@ RestedXP decides where you should go. Waypoint UI shows you how to get there and
 
 Client: WoW Forever beta (`_classic_beta_`, build 1.60.1, interface `16001`, game type `camelot`).
 
-## How it works
+## Strategies
+
+| Strategy (`/rxpwb mode …`) | Native quest marker for | Otherwise |
+|---|---|---|
+| `coordinates` (default for new installs) | nothing | RestedXP coordinates with instruction labels |
+| `hybrid` | quest turn-ins (v0.4 rules, unchanged) | coordinates |
+| `native-first` (experimental) | quest turn-ins and quest objectives (`.complete`) | coordinates |
+
+`/rxpwb on` / `off` controls *whether* the bridge follows RestedXP. The strategy controls *how*.
+
+## How native-first decides
 
 ```
-RestedXP route logic ──► RXPG_ARROW.element ──► RXPAdapter (validate) + LabelResolver (describe)
-                                                      │
-                                         NavigationResolver (coordinates or native quest?)
-                                                      │
-                                Sync (0.25 s change check + quest events, write on change)
-                                       │                                   │
-             WaypointAdapter ──► NewUserNavigation             C_SuperTrack.SetSuperTrackedQuestID
-               (Mode A: coordinates)                              (Mode B: native quest)
+RestedXP arrow waypoint
+  ├─ not a guide .goto, or it has its own travel text ("Enter the crypt") ......... coordinates
+  ├─ more waypoints follow before any instruction (route chain, not a #loop) ...... coordinates
+  └─ RestedXP's instruction block for this waypoint
+       ├─ first pending instruction is a .turnin ─► quest in log and ready? ......... native turn-in
+       ├─ only .complete objectives of ONE quest, nothing else pending
+       │     ─► quest in log, not complete, every unfinished objective of the quest
+       │        is one RestedXP targets here? .................................... native objective
+       └─ anything else (two quests, an accept, a non-quest instruction, ...) ...... coordinates
+  then: supertrack the quest and verify a native target exists and is consistent;
+        if not ─► release the quest and fall back to coordinates
 ```
 
-### Strategies and modes
+The **instruction block** comes from RestedXP's own structure:
 
-| Strategy (`/rxpwb mode …`) | Behaviour |
-|---|---|
-| `coordinates` (default) | Every destination uses RestedXP's coordinates with the v0.3 labels. This is the v0.3 behaviour. |
-| `hybrid` (experimental) | Eligible quest turn-ins use native quest navigation. Everything else uses coordinates. |
+- For a `.goto` placed after its objectives (it has a `parent`), the block is the lines above it, back to the previous waypoint.
+- Otherwise, the block is the lines after it.
+- In a `#loop` step, the whole patrol circuit belongs to the objective area. That is how RestedXP writes kill and collect areas.
+- **Patrol steps (0.5.1).** RestedXP often puts the patrol circuit in its own hidden, sticky step (`#hidewindow`, `#completewith X`, `#loop`, `.goto` points, `+1`). The real objectives then sit in the steps running alongside it. For example, Skyborne has the Agitators kill step with no `.goto` of its own.
+  - When the arrow's step contains nothing but the `+1` placeholder and is a sticky `#loop`, the bridge looks at the steps it serves: RestedXP's other active steps after it.
+  - All of those steps' pending objectives must belong to one quest, and none of them may have its own waypoint.
+  - A real `+text` instruction (e.g. "Kill … until you have 60 copper") is never treated as a placeholder.
 
-Automatic sync (`/rxpwb on` / `off`) is separate. It controls *whether* the bridge follows RestedXP. The strategy controls *how* it does so.
+Descriptive lines such as `>>Kill X and Y` or `*Prioritize Y` are headings and never block an objective.
 
-### When a turn-in goes native (hybrid)
+**Arrival radius is not used to classify waypoints in native-first.** `.goto x,y,7,0` before "Click on the Crystals" (Windstone Clusters) is the objective area, while `.goto a,8,0` → `.goto b,8,0` → `.goto c` before a kill is a route.
 
-All of these must hold:
+**Why the coverage rule matters.** Blizzard picks its own marker among a quest's unfinished objectives. If the quest still has an objective RestedXP plans to do somewhere else, the native marker could lead there instead, so the bridge stays on coordinates.
 
-1. RestedXP's arrow is on a guide `.goto` that is a **final destination**. RestedXP marks a `.goto` with an arrival radius as reached and moves on, so those (cave entrances, road turns, route chains) always stay on coordinates.
-2. RestedXP's own data ties that waypoint to a turn-in, in one of two ways:
-   - The waypoint's linked instruction (`element.parent`) is a pending `.turnin`.
-   - Or, for a step's leading `.goto`, the first *pending* instruction after it (skipping "Talk to …" text lines and completed instructions, and before any other waypoint) is a `.turnin`.
-3. The quest is in your quest log and ready for turn-in.
-4. After the quest is supertracked, WoW reports a native navigation target. That target must not be measurably inconsistent with RestedXP's destination; the check fails if the distances differ by more than 50 yards.
+### Verifying the native target
 
-If several turn-ins are pending at one destination, the first in RestedXP's order is tracked, then the next.
+After supertracking, the bridge compares two distances measured from the player's position:
 
-Because the arrow only reaches the turn-in waypoint after RestedXP has passed every intermediate point, the route is always followed first.
+- Blizzard's navigation distance (`C_Navigation.GetDistance`).
+- The distance to RestedXP's point (`HereBeDragons`, the library RestedXP's own arrow uses).
+
+The difference between them is a **lower bound** on how far apart the two targets are, so the check can reject a clearly different target but never prove they're the same. The limits are:
+
+| Kind | Limit | Why |
+|---|---|---|
+| Turn-in | 50 yd | The quest giver; validated in game in v0.4 |
+| Objective | 100 yd | Blizzard marks the objective area, RestedXP picks a point in it |
+
+For a `#loop` patrol, RestedXP's destination is the **whole circuit**, not just the point its arrow is on, which can be the far side of the loop. So the native marker is compared with **every** patrol point, and rejected only if it's provably more than the limit away from all of them (0.5.2).
+
+Every check logs the measured values in debug mode, so the limits can be tuned from real data. For a patrol, the RestedXP value shown is the nearest patrol point. Height may or may not be included in Blizzard's distance; that's undocumented.
 
 ### Transitions
 
-- **Coordinates → native.** The bridge clears *only its own* Waypoint UI waypoint and waits 0.25 seconds. It has to wait because Waypoint UI clears all supertracking when a tracked waypoint is removed. It then supertracks the quest, and 0.6 seconds later verifies that a native target exists.
-- **Native → coordinates** (e.g. after the turn-in, or when travel resumes). The quest is released if it is still the one being tracked, then the coordinate waypoint is created silently.
-- **Native → native** (the next turn-in at the same NPC). The new quest is supertracked and verified.
-- **Failure** (no native target, inconsistent target, or supertracking didn't take effect). The bridge releases the quest, falls back to RestedXP's coordinates, and doesn't retry that quest at that destination until you zone or change strategy.
-
-The bridge re-evaluates whenever RestedXP's target changes, and on quest events in hybrid mode (coalesced, 0.5 seconds after the event). An unchanged desired state never causes a write.
+- Coordinates ↔ native, objective → objective, objective → turn-in (even at the same coordinates), and turn-in → coordinates all go through one controller (`Sync.lua`).
+- Native identity in native-first is **what** is tracked (`objective:questID` / `turnin:questID`), not where RestedXP's point is. So RestedXP cycling loop points, and kill or loot progress, **never** re-supertrack the quest. Waypoint UI updates the progress itself.
+- Quest events are coalesced: one evaluation 0.5 seconds after a burst. A failed native attempt isn't retried for that quest until you zone or change strategy.
 
 ### Manual waypoints
 
-If you pick your own destination in Waypoint UI, the bridge leaves it alone. It also won't switch modes at the same destination while your waypoint is tracked. It resumes when RestedXP moves to a new destination. RestedXP supertracking the same quest the bridge chose is treated as the bridge's own navigation.
+If you pick your own destination in Waypoint UI, the bridge leaves it alone. That includes while RestedXP cycles a loop on the same objective, and while you make progress. It takes over again when RestedXP moves to a new destination. RestedXP supertracking the same quest counts as the bridge's own navigation.
 
-### Descriptions (coordinate mode)
+### Labels (coordinate mode)
 
-Labels come from RestedXP's instruction for the arrow's waypoint, in this order:
-
-1. The arrow title.
-2. The step's arrow text.
-3. The waypoint's own text.
-4. The objective RestedXP linked to the waypoint.
-5. The following instruction that isn't finished yet.
-6. The preceding instruction.
-7. The step's title.
-8. `Step N`.
-
-Markup is cleaned:
-
-- RestedXP colour tokens, NPC IDs (`Name::12345`), icons and links are removed or reduced to their visible text.
-- Progress counters are dropped.
-- Only the first line is kept.
-- Text over about 60 characters is shortened.
-
-See the header of `LabelResolver.lua` for the details.
+Labels come from RestedXP's instruction for the arrow's waypoint. Colour codes, icons, NPC IDs and progress counters are removed, and `Step N` is used when the link is unclear. See `LabelResolver.lua`.
 
 | File | Role |
 |---|---|
 | `Core.lua` | Settings, logging, slash commands, initialisation |
 | `LabelResolver.lua` | Waypoint descriptions from RestedXP's step data |
 | `RXPAdapter.lua` | Reads and validates RestedXP's arrow target, detects changes, measures distance |
-| `NavigationResolver.lua` | Turn-in detection, quest state, mode decision, native supertracking and verification |
+| `NavigationResolver.lua` | Hybrid turn-in rules, native-first objective rules, quest state, decisions, native supertracking and verification |
 | `WaypointAdapter.lua` | The only code that calls Waypoint UI |
 | `Sync.lua` | The single controller: change detection, mode transitions, manual sync |
 | `tests/` | Offline tests (not loaded by WoW) |
 
 ## Local development setup
-
-The repository is loaded by WoW directly, with no build step:
 
 ```powershell
 New-Item -ItemType Junction `
@@ -127,30 +128,37 @@ npm install --prefix tests   # once; installs fengari (a Lua VM in JavaScript)
 node tests/run.js
 ```
 
-The tests run the real addon files against mocked RestedXP, Waypoint UI and WoW APIs. They cover label cleaning and resolution, turn-in detection, intermediate-waypoint protection, transitions, fallbacks, idempotency and manual overrides. They do **not** prove in-game behaviour.
+These run the real addon files against mocked RestedXP, Waypoint UI and WoW APIs:
+
+- `label_test.lua`: label cleaning and resolution.
+- `hybrid_test.lua`: the v0.4 strategy, as a regression test.
+- `native_first_test.lua`: step structures taken from the installed Forever guides.
+- `agitators_test.lua`: the Skyborne Agitators patrol step and its neighbours.
+
+They don't prove in-game behaviour.
 
 ## Commands
 
 | Command | Description |
 |---|---|
 | `/rxpwb` | List commands |
-| `/rxpwb status` | Dependencies, RestedXP waypoint, label, turn-in quest, decision and reason, active mode, ownership, last transition and failure |
+| `/rxpwb status` | Dependencies, RestedXP step and waypoint, label, quest, classification, objective progress, native eligibility and reason, active mode, ownership, last transition and failure |
 | `/rxpwb sync` | Apply the current RestedXP destination now, using the selected strategy. Works with auto sync off. |
 | `/rxpwb on` / `off` | Turn automatic sync on (the default) or off. Off leaves the current destination untouched. |
-| `/rxpwb mode coordinates` / `hybrid` | Choose the navigation strategy. The current destination is re-evaluated immediately. |
-| `/rxpwb debug` | Turn debug messages about decisions and transitions on or off |
-
-Settings (`autoSync`, `strategy`, `debug`) are saved account-wide in `RXPWaypointBridgeDB`.
+| `/rxpwb mode coordinates` / `hybrid` / `native-first` | Choose the strategy. Saved, and the current destination is re-evaluated immediately. |
+| `/rxpwb debug` | Turn debug messages about decisions, verification values and transitions on or off |
+| `/rxpwb inspect` | One-off dump of what the resolver sees: the arrow waypoint, its step (loop, sticky, hidden), each instruction (heading, placeholder, objective, done or pending), the steps a patrol serves, RestedXP's active steps, candidate quests with objective progress, the native-first analysis and reason, and the last native verification |
 
 ## Known limitations
 
-- **Hybrid mode is experimental** and only handles turn-ins. Kill and collect objectives, and accepts, always use coordinates.
-- Native verification can only *reject* clearly different targets (it compares distances). It can't prove the native marker is on the same NPC. The main evidence is RestedXP's own waypoint-to-turn-in link.
-- The native → coordinates and coordinates → native switches briefly remove the marker (about 0.25 seconds plus Waypoint UI's animation).
-- RestedXP may supertrack other quests by itself (for example, `.complete` objectives in sticky steps). The bridge records this as an outside change and doesn't fight it.
-- A `.goto` with a radius right before a turn-in stays on coordinates. This is deliberate.
-- Labels are snapshots taken when the destination changes. Ambiguous steps show `Step N`.
-- Corpse and world-coordinate-only targets are not supported.
+- **Patrol areas shared by two quests stay on coordinates.** In Skyborne, Windstone Clusters and Agitators share a patrol. Native tracking starts once only one quest's objectives remain.
+- **Objectives with no RestedXP waypoint at all aren't handled.** The bridge only follows the arrow's waypoint and keeps the previous navigation when RestedXP has none.
+- **`.collect` isn't eligible.** Item collection may not be a quest-log objective. `.complete` objectives only.
+- **The two quests' order isn't known.** When two quests share an area, coordinates are used.
+- **Verification can only reject.** It can't prove the native marker is on the exact mob or object RestedXP means. The main evidence is RestedXP's own waypoint-to-objective link.
+- **Switching between coordinates and native briefly removes the marker**, for about 0.25 seconds plus Waypoint UI's animation.
+- **RestedXP may supertrack other quests by itself.** The bridge records that and doesn't fight it.
+- Corpse and world-coordinate-only targets aren't supported.
 - `RXPG_ARROW.element` and step data are internal RestedXP state, not a public API.
 - WoW Forever is still in beta. Recheck against the launch client (4 November 2026).
 
@@ -158,10 +166,11 @@ Settings (`autoSync`, `strategy`, `debug`) are saved account-wide in `RXPWaypoin
 
 1. 0.1: manual sync (done).
 2. 0.2: automatic route mirroring (done).
-3. 0.3: step descriptions (implemented).
-4. **0.4: hybrid navigation for quest turn-ins** (this version, experimental).
-5. Next: validate hybrid in game and decide whether to make it the default. Possibly extend it to other quest steps, and ask the Waypoint UI author about a `contextQuestID`-style API, which would give coordinates plus quest info at once.
-6. 1.0: optional visual-only hiding of the RestedXP arrow, explicit pause and resume, world-coordinate targets, minimal settings, and validation against the launch client.
+3. 0.3: step descriptions (done).
+4. 0.4: hybrid navigation for turn-ins (done, tested in game).
+5. **0.5: native-first quest navigation** (this version, experimental; 0.5.1 adds patrol steps and `/rxpwb inspect`; 0.5.2 checks patrols against the whole circuit).
+6. Next: validate native-first in game, tune the verification limits from the debug values, and decide the default strategy.
+7. 1.0: optional visual-only hiding of the RestedXP arrow, explicit pause and resume, world-coordinate targets, minimal settings, and validation against the launch client.
 
 ## Licensing
 

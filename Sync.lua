@@ -10,15 +10,20 @@
 --   inside private functions, so there is nothing reliable to hook, and
 --   RXP_STEP_ACTIVATED misses waypoint changes within a step. Polling the
 --   resolved target covers both.
---   With the hybrid strategy, quest events (turn-in, accept, log update)
---   also schedule one coalesced evaluation, because a turn-in becoming ready
---   or done changes the desired mode without moving RestedXP's arrow.
+--   With the hybrid or native-first strategy, quest events (turn-in, accept,
+--   log update) also schedule one coalesced evaluation, because objectives
+--   finishing or a turn-in becoming ready change the desired mode without
+--   moving RestedXP's arrow.
 --
 -- Modes (decided by NavigationResolver)
 --   coordinates  Waypoint UI custom navigation at RestedXP's coordinates.
---   native       WoW's supertracked quest (eligible quest turn-ins, hybrid only).
---   The handled state is (mode, destination key, quest); evaluation is
---   idempotent: an unchanged desired state never causes a write.
+--   native       WoW's supertracked quest: eligible turn-ins (hybrid,
+--                native-first) and quest objectives (native-first).
+--   The handled state is (mode, destination key, native id); evaluation is
+--   idempotent: an unchanged desired state never causes a write. The native
+--   id comes from the resolver: hybrid keeps v0.4's "key#quest"; native-first
+--   uses "kind:quest", so RestedXP cycling #loop points or progress updates
+--   on the same objective never re-supertrack.
 --
 -- Write rules
 --   * Waypoint UI is written only when the desired state differs from the
@@ -86,7 +91,9 @@ local state = {
     handledKey = nil,        -- destination key
     handledLabel = nil,      -- coordinates: label last written
     handledQuest = nil,      -- native: supertracked quest ID
-    handledId = nil,         -- native: destination key + quest
+    handledId = nil,         -- native: decision.nativeId (hybrid: key#quest; native-first: kind:quest)
+    handledKind = nil,       -- native: "turnin" or "objective"
+    handledProgress = nil,   -- native objective: last logged progress
     pendingNative = nil,     -- { id, questID } while a native transition runs
     generation = 0,          -- bumped on every transition
     failedKey = nil,         -- destination key Waypoint UI last rejected
@@ -96,6 +103,7 @@ local state = {
     lastResultTime = nil,
     lastTransition = nil,    -- { text, time }
     lastFailure = nil,       -- { text, time }
+    lastVerification = nil,  -- { questID, ok, detail, time } of the last native check
     lastDecision = nil,
     lastDecisionLog = nil,   -- avoids repeating the same decision message
     lastInvalidReason = nil, -- avoids repeating the same skip message
@@ -125,15 +133,18 @@ local function NoteFailure(text)
     state.lastFailure = { text = text, time = GetTime() }
 end
 
-local function NativeId(key, questID)
-    return format("%s#%s", tostring(key), tostring(questID))
-end
-
 local function DescribeHandled()
     if state.handledMode == "native" and state.handledQuest then
         return format("native quest %d", state.handledQuest)
     end
     return state.handledMode or "none"
+end
+
+local function ClearHandledNative()
+    state.handledQuest = nil
+    state.handledId = nil
+    state.handledKind = nil
+    state.handledProgress = nil
 end
 
 function Sync.GetState()
@@ -147,6 +158,7 @@ function Sync.GetState()
         running = state.ticker ~= nil,
         mode = state.handledMode,
         questID = state.handledQuest,
+        kind = state.handledKind,
         pending = state.pendingNative ~= nil,
         bridgeActive = active and true or false,
         lastSynced = state.lastSynced,
@@ -154,6 +166,7 @@ function Sync.GetState()
         lastResultTime = state.lastResultTime,
         lastTransition = state.lastTransition,
         lastFailure = state.lastFailure,
+        lastVerification = state.lastVerification,
         external = state.external,
     }
 end
@@ -166,22 +179,30 @@ local function NoteStep(target)
     end
 end
 
+-- Logs a decision once per meaningful change (not per poll or quest event).
 local function LogDecision(target, decision)
-    local key = format("%s|%s|%s|%s", decision.mode, tostring(decision.questID), decision.reason or "",
-        tostring(target.stepIndex))
+    local key = format("%s|%s|%s|%s|%s", decision.mode, tostring(decision.nativeId), decision.reason or "",
+        tostring(target.stepIndex), tostring(decision.classification))
     if key == state.lastDecisionLog then return end
     state.lastDecisionLog = key
 
     if decision.questID then
         local qs = decision.questState or {}
-        ns.Debug("Step %s: turn-in candidate quest %d (%s) - in log: %s, ready: %s",
-            tostring(target.stepIndex or "-"), decision.questID, tostring(decision.questName or "?"),
-            qs.inLog and "yes" or "no", qs.ready and "yes" or "no")
+        if decision.kind == "objective" then
+            ns.Debug("Step %s: quest objective detected: %s quest %d (%s)%s",
+                tostring(target.stepIndex or "-"), tostring(decision.classification or "objective"),
+                decision.questID, tostring(decision.questName or "?"),
+                decision.progress and (" - " .. decision.progress) or "")
+        else
+            ns.Debug("Step %s: turn-in candidate quest %d (%s) - in log: %s, ready: %s",
+                tostring(target.stepIndex or "-"), decision.questID, tostring(decision.questName or "?"),
+                qs.inLog and "yes" or "no", qs.ready and "yes" or "no")
+        end
     end
     if decision.mode == "native" then
-        ns.Debug("Selected native quest mode: %s", decision.reason)
+        ns.Debug("%s: selecting quest %d - %s", ns.db.strategy, decision.questID, decision.reason)
     else
-        ns.Debug("Using RestedXP coordinates: %s", decision.reason or "?")
+        ns.Debug("Coordinate fallback: %s", decision.reason or "?")
     end
 end
 
@@ -193,8 +214,7 @@ local function RecordSuccess(target, result)
     state.handledMode = "coordinates"
     state.handledKey = target.key
     state.handledLabel = target.label
-    state.handledQuest = nil
-    state.handledId = nil
+    ClearHandledNative()
     state.failedKey = nil
     state.lastSynced = {
         mode = "coordinates",
@@ -237,8 +257,7 @@ local function ToCoordinates(target, how, suppressAudio)
         Nav.ReleaseNativeQuest(questID)
         NoteTransition(format("%s -> coordinates", questID and format("native quest %d", questID) or "native"))
         state.handledMode = "coordinates"
-        state.handledQuest = nil
-        state.handledId = nil
+        ClearHandledNative()
         state.handledKey = nil
         state.handledLabel = nil
     end
@@ -273,7 +292,7 @@ local function FailNative(target, questID, id, why, announce)
     state.pendingNative = nil
     state.nativeFailed[id] = why
     NoteFailure(format("native quest %d: %s", questID, why))
-    ns.Debug("Native target unavailable (%s); falling back to coordinates.", why)
+    ns.Debug("Native verification failed after classification passed (%s); falling back to coordinates.", why)
     if announce then
         ns.Print("Native quest navigation unavailable (%s); using RestedXP coordinates.", why)
     end
@@ -289,7 +308,7 @@ end
 
 BeginNative = function(target, decision, how, announce)
     local questID = decision.questID
-    local id = NativeId(target.key, questID)
+    local id = decision.nativeId
     local name = decision.questName or ("quest " .. questID)
     local from = DescribeHandled()
 
@@ -301,13 +320,21 @@ BeginNative = function(target, decision, how, announce)
     state.handledKey = target.key
     state.handledQuest = questID
     state.handledId = id
+    state.handledKind = decision.kind
+    state.handledProgress = decision.progress
     state.handledLabel = nil
     state.selfWriteUntil = GetTime() + NATIVE_SET_DELAY + NATIVE_VERIFY_DELAY + SELF_WRITE_GUARD
-    ns.Debug("Starting transition: %s -> native quest %d (%s)", from, questID, name)
+    ns.Debug("Starting transition: %s -> native quest %d (%s, %s)", from, questID, name,
+        tostring(decision.classification or decision.kind))
 
     local function Verify()
         if generation ~= state.generation then return end
-        local ok, detail = Nav.VerifyNative(target, questID)
+        local ok, detail, m = Nav.VerifyNative(target, questID, decision.tolerance, decision.references)
+        state.lastVerification = { questID = questID, ok = ok, detail = detail, time = GetTime() }
+        ns.Debug("Native target check: native %s yd, RestedXP %s yd%s, gap %s yd, limit %s yd.",
+            m and m.native and format("%.1f", m.native) or "?", m and m.rxp and format("%.1f", m.rxp) or "?",
+            m and m.points and format(" (nearest of %d patrol points)", m.points) or "",
+            m and m.gap and format("%.1f", m.gap) or "?", tostring(m and m.tolerance or "?"))
         if not ok then
             FailNative(target, questID, id, detail, announce)
             return
@@ -360,8 +387,7 @@ local function PauseForForeign(target, foreign)
     state.handledMode = "coordinates"
     state.handledKey = target.key
     state.handledLabel = target.label
-    state.handledQuest = nil
-    state.handledId = nil
+    ClearHandledNative()
     SetExternal(format("another waypoint is tracked (%s)", foreign))
     SetResult("paused: another waypoint is tracked")
     ns.Debug("Synchronization paused: external waypoint selected (%s). Resumes at the next RestedXP destination.", foreign)
@@ -414,9 +440,16 @@ local function EnsureCoordinates(target, trigger)
 end
 
 local function EnsureNative(target, decision, trigger)
-    local id = NativeId(target.key, decision.questID)
+    local id = decision.nativeId
     if state.handledMode == "native" and state.handledId == id then
-        if trigger == "target" then ns.Debug("Skipped: native quest unchanged.") end
+        -- Same quest and kind: Blizzard and Waypoint UI update progress and the
+        -- native target themselves; never re-supertrack.
+        if decision.progress and decision.progress ~= state.handledProgress then
+            state.handledProgress = decision.progress
+            ns.Debug("Native objective updated: quest %d - %s (no navigation write).", decision.questID, decision.progress)
+        elseif trigger == "target" then
+            ns.Debug("Skipped: native quest unchanged.")
+        end
         return
     end
 
@@ -451,7 +484,7 @@ local function Evaluate(trigger)
 
     local decision = Nav.Decide(target, ns.db.strategy)
     if decision.mode == "native" then
-        local failed = state.nativeFailed[NativeId(target.key, decision.questID)]
+        local failed = state.nativeFailed[decision.nativeId]
         if failed then
             decision.mode = "coordinates"
             decision.reason = "native target failed verification earlier: " .. failed
@@ -463,7 +496,7 @@ local function Evaluate(trigger)
     -- Hold mode changes at an unchanged destination while the player follows
     -- a waypoint the bridge did not create (it resumes on a new destination).
     if state.handledMode and target.key == state.handledKey then
-        local wantId = decision.mode == "native" and NativeId(target.key, decision.questID) or nil
+        local wantId = decision.mode == "native" and decision.nativeId or nil
         local modeChange = decision.mode ~= state.handledMode
             or (decision.mode == "native" and wantId ~= state.handledId)
         if modeChange then
@@ -505,7 +538,7 @@ end
 
 local function OnQuestEvent()
     if not state.ticker or state.questEvalPending then return end
-    if ns.db.strategy ~= "hybrid" and state.handledMode ~= "native" then return end
+    if ns.db.strategy == "coordinates" and state.handledMode ~= "native" then return end
     state.questEvalPending = true
     C_Timer.After(QUEST_EVAL_DELAY, RunQuestEvaluation)
 end
@@ -548,8 +581,7 @@ local function ResetHandled()
     state.handledMode = nil
     state.handledKey = nil
     state.handledLabel = nil
-    state.handledQuest = nil
-    state.handledId = nil
+    ClearHandledNative()
     state.failedKey = nil
     state.lastInvalidReason = nil
     state.lastDecisionLog = nil

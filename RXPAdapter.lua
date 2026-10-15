@@ -125,7 +125,11 @@ end
 -- HereBeDragons library RestedXP itself uses for its arrow (element.wx/wy
 -- are HBD world coordinates). Returns nil when it cannot be measured.
 function RXP.GetDistanceToTarget(target)
-    local element = target and target.element
+    return RXP.GetDistanceToElement(target and target.element)
+end
+
+-- Same, for any RestedXP waypoint element (e.g. every point of a #loop circuit).
+function RXP.GetDistanceToElement(element)
     if type(element) ~= "table" then return nil end
     if not (ns.IsFiniteNumber(element.wx) and ns.IsFiniteNumber(element.wy)) then return nil end
 

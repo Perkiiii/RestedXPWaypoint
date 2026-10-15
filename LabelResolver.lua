@@ -87,7 +87,8 @@ function Label.Clean(text)
     -- Progress counters would go stale on a static label: "Worg slain: 3/10".
     text = text:gsub("%s*:?%s*%(?%d+%s*/%s*%d+%)?%s*$", "")
     text = text:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
-    if text == "" or not text:find("[%w\128-\255]") then return nil end
+    -- Needs at least one letter: RestedXP's "+1" placeholder is not a label.
+    if text == "" or not text:find("[%a\128-\255]") then return nil end
 
     local shortened = false
     if #text > MAX_LENGTH then

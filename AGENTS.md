@@ -81,7 +81,21 @@ The developer tests every change by hand in game with `/reload`. There is no bui
   - `{ tag = "turnin", questId, title = "" -> quest name at runtime, text, flags, reward }`.
   - A negative ID sets `skipIfMissing`. They are **not** `textOnly`, so a `.goto` placed after a turn-in gets it as `parent`.
   - Completed on turn-in via `IsQuestTurnedIn`.
-- `.goto` radius semantics: a `.goto` with a radius is marked `skip` when reached (`UpdateGotoSteps`). It is a pass-through point (route chains, cave entrances, `,8,0` optional points). A `.goto` without a radius stays the step's destination until the step completes. `,0` optional points become `lowPrio`; a negative radius makes them `dynamic`.
+- `.goto` radius semantics: a `.goto` with a radius is marked `skip` when reached (`UpdateGotoSteps`). A `.goto` without a radius stays the step's destination until the step completes. `,0` optional points become `lowPrio`; a negative radius makes them `dynamic`.
+  - A radius means "mark reached when within N yd". That is used both for pass-through points (route chains, cave entrances) **and** for "arrive in the objective area". The Forever Windstone step is `#completewith next / .goto 2521,43.53,23.83,7,0 / >>Click on the Crystals / .complete 93552,1`.
+  - **Radius alone does not classify a waypoint.** Hybrid (v0.4) still uses it as its conservative turn-in rule; native-first does not.
+- `.complete` elements (`functions.lua` ~1789): `{ tag = "complete", questId, obj, objMax, dynamicText = true, rawtext, textOnly = (flags % 2 == 1) }`.
+  - `obj` is the 1-based index into `C_QuestLog.GetQuestObjectives(questId)`, whose entries have `type` (`monster`/`item`/`object`/`event`/...), `finished`, `numFulfilled` and `numRequired`.
+  - They are `lastObjective` candidates (`dynamicText`), so a `.goto` after them gets them as `parent`.
+- `.collect itemId,qty,questId,...`: the quest ID is optional and means item collection, not necessarily a quest-log objective. Native-first ignores it, so it stays on coordinates.
+- `#loop` sets `step.loop` (the value is `""`, which is truthy). Forever kill and collect steps are `#loop` steps: a lowPrio `.goto ...,0`, then patrol points `.goto ...,30/40,0`, then `>>Kill ...` text, then one or more `.complete q,n` lines and `.mob` helpers.
+- Many Skyborne kill steps have **no** `.goto` at all. The arrow then sits on a separate **patrol step**: `#hidewindow`, `#completewith X`, `#loop`, `.goto` points, then `+1`.
+  - `+1` parses to `{ text = "1" }`: no tag, not `textOnly`. It is a placeholder that keeps the step from completing.
+  - Example: RestedXP-Skyborne.lua around the Agitators quest 92465, Alliance/!Shaman path. Steps: the patrol; `#completewith next` Windstone `.complete 93552,1`; then Agitators `>>Kill … / *Prioritize … / .complete 92465,1 / .complete 92465,2`.
+  - v0.5.0 reported `next instruction is .text` for the `+1`. v0.5.1 delegates such patrol steps to the steps they serve.
+- `_G.RXPFrame.activeSteps` (GuideWindow.lua ~667, a named global frame) lists RestedXP's active steps: the sticky steps still running (index order), then the current step, plus a tip window that has no `index`. Each has `step.active = true`. Read-only.
+- `step.sticky` is set for every `#completewith` step at load (GuideWindow.lua ~1969). `#hidewindow` sets `step.hidewindow`.
+- `.usespell` is a real instruction (not `textOnly`); `.macro` is `textOnly`.
 - RestedXP's own quest-state helpers use `C_QuestLog.IsOnQuest` and `C_QuestLog.IsComplete`. Waypoint UI uses `C_QuestLog.ReadyForTurnIn`, `C_Navigation.GetDistance/GetFrame`, `C_SuperTrack.GetHighestPrioritySuperTrackingType` and `Enum.SuperTrackingType`, all unguarded at file scope. Since Waypoint UI runs in Forever, these exist there.
 
 ### Waypoint UI (`WaypointUI`)
@@ -101,19 +115,19 @@ The developer tests every change by hand in game with `/reload`. There is no bui
 - Waypoint UI does not compute quest POI locations itself. Quest-POI location APIs (`C_QuestLog.GetNextWaypoint`, etc.) are unverified in Forever. Native targets are therefore checked with `C_Navigation.GetDistance()` only.
 - **Clearing a tracked user waypoint triggers `ClearAllSuperTracked()`.** Waypoint UI's `USER_WAYPOINT_UPDATED` handler calls `C_SuperTrack.ClearAllSuperTracked()` when the user waypoint disappears while supertracked. Any quest supertracking must therefore be set *after* clearing the bridge's waypoint, with a delay. `ClearUserNavigation(false, true)` also removes the native waypoint and suppresses the multi-pin advance.
 
-## Architecture (0.4.0)
+## Architecture (0.5.0)
 
 The load order is set in the `.toc`. All modules share the addon namespace `ns`.
 
 | File | Namespace | Responsibility |
 |---|---|---|
-| `Core.lua` | `ns` | Settings (`RXPWaypointBridgeDB`: `autoSync`, `debug`, `strategy` = `"coordinates"` (default) or `"hybrid"`), `ns.Print`/`ns.PrintLine`/`ns.Debug`, shared helpers, slash commands (including `/rxpwb mode`), `ADDON_LOADED`/`PLAYER_LOGIN` |
+| `Core.lua` | `ns` | Settings (`RXPWaypointBridgeDB`: `autoSync`, `debug`, `strategy` = `"coordinates"` (default for new installs), `"hybrid"` or `"native-first"`; a saved value is always kept), `ns.Print`/`ns.PrintLine`/`ns.Debug`, shared helpers, slash commands (including `/rxpwb mode`), `ADDON_LOADED`/`PLAYER_LOGIN` |
 | `LabelResolver.lua` | `ns.Label` | `Resolve(element)` returns `{ label, source, cleaned, shortened, fallback, raw }`, using the priority documented at the top of the file. `Clean(text)` returns `cleaned, wasCleaned, wasShortened`. Reads RestedXP step data. |
 | `RXPAdapter.lua` | `ns.RXP` | Reads RestedXP's arrow target. `GetTarget()` returns `(target, reason)`: `reason` is nil when the target is valid, and then `target.key` is set. `target` also has `label`, `labelInfo` and `stripCoordinates`. `target.element` is the raw RestedXP element (read-only). `HasTargetChanged()` is a cheap poll comparison that deliberately ignores text. `ResetObservation()`. `DestinationKey()`. `GetDistanceToTarget()` uses HereBeDragons through `LibStub`, with the element's `wx`/`wy`. |
-| `NavigationResolver.lua` | `ns.Nav` | `FindTurnIn(element)` analyses structure only and can be tested offline. `GetQuestState()`. `Decide(target, strategy)` returns `{ mode, reason, questID, questName, questState, hybridMode }`. Native wrappers: `SetNativeQuest()`, `ReleaseNativeQuest()` (only if still supertracked), `IsNativeQuestActive()`, `VerifyNative()`. Reads RestedXP step data and calls `C_SuperTrack`, `C_QuestLog` and `C_Navigation`. |
+| `NavigationResolver.lua` | `ns.Nav` | Structure-only analysis, testable offline: `FindTurnIn(element)` (hybrid, unchanged since v0.4) and `FindQuestTarget(element)` (native-first: turn-ins and `.complete` objectives). `GetQuestState(questID, withObjectives)`. `Decide(target, strategy)` returns `{ mode, reason, nativeEligible, kind, classification, questID, questName, questState, objectives, progress, pendingTurnIns, nativeId, tolerance, analysis }`. Native wrappers: `SetNativeQuest()`, `ReleaseNativeQuest()` (only if still supertracked), `IsNativeQuestActive()`, `VerifyNative()`. Reads RestedXP step data and calls `C_SuperTrack`, `C_QuestLog` and `C_Navigation`. |
 | `WaypointAdapter.lua` | `ns.WUI` | **Only** place that calls Waypoint UI. `SetNavigation()` (passes `stripCoordinates`), `GetNavigation()`, `IsShowingTarget()` (coordinates), `HasTargetLabel()`, `IsOwnedNavigationTracked()`, `ClearOwnedNavigation()` (bridge-owned only), `GetForeignNavigationName()`, `DescribeOutsideNavigation(expectedQuestID)`. |
 | `Sync.lua` | `ns.Sync` | The single controller. `Initialize()`, `Start()`/`Stop()`, `SyncNow()`, `OnStrategyChanged()`, `GetState()`. |
-| `tests/` | — | `node tests/run.js` runs `*_test.lua` in fengari against mocked APIs (`npm install --prefix tests` once). WoW ignores this folder because it isn't in the `.toc`. **Update or extend these tests whenever you change resolver or sync behaviour.** |
+| `tests/` | — | `node tests/run.js` runs `*_test.lua` in fengari against mocked APIs (`npm install --prefix tests` once). The files are `label_test.lua`, `hybrid_test.lua` (the v0.4 regression suite, self-contained; keep it passing unchanged), `native_first_test.lua` and `agitators_test.lua` (the Skyborne patrol-step fixtures). The last two use the shared mocks in `harness.lua`, including `RXPFrame.activeSteps` via `H.setActiveSteps`; `H.verbose` prints debug output on failures. WoW ignores this folder because it isn't in the `.toc`. **Update or extend these tests whenever you change resolver or sync behaviour.** |
 
 ### Sync rules (keep these invariants)
 
@@ -144,24 +158,61 @@ The load order is set in the `.toc`. All modules share the addon namespace `ns`.
   - Failure → `FailNative`: record `nativeFailed[id]`, release the quest, and fall back to coordinates. Don't retry until `PLAYER_ENTERING_WORLD` or a strategy change.
 - **Native → coordinates:** `ToCoordinates` releases the quest only if it is still supertracked, resets `handledKey`, then calls `Apply`.
 - **Cancelling stale work:** every transition (`Apply`, `BeginNative`, `ResetHandled`) bumps `generation`, and timer callbacks compare it. `BeginNative` sets the handled state optimistically, so evaluations during a transition see it.
-- **Quest events** (`QUEST_LOG_UPDATE`, `QUEST_TURNED_IN`, `QUEST_ACCEPTED`, `QUEST_REMOVED`) schedule one coalesced `Evaluate("quest")` after 0.5 s. This only happens in hybrid mode, or while native is active. Debug messages about unchanged states are only logged for `"target"` triggers.
+- **Quest events** (`QUEST_LOG_UPDATE`, `QUEST_TURNED_IN`, `QUEST_ACCEPTED`, `QUEST_REMOVED`) schedule one coalesced `Evaluate("quest")` after 0.5 s. This only happens in hybrid or native-first mode, or while native is active. Debug messages about unchanged states are only logged for `"target"` triggers.
+- **Native identity comes from `decision.nativeId`:**
+  - Hybrid uses `key#quest`, unchanged from v0.4.
+  - Native-first uses `kind:quest` (`objective:Q` / `turnin:Q`), so RestedXP cycling `#loop` points and progress updates never re-supertrack.
+  - Objective → turn-in for the same quest is an id change, so it is re-verified with the turn-in tolerance.
+  - On the same id, a changed `decision.progress` is only logged ("Native objective updated").
+- **Patrol references (v0.5.2):** for `#loop` blocks and patrol delegation, `candidate.references` and `decision.references` hold every waypoint of the circuit.
+  - `VerifyNative` uses the smallest `|native − point|` across those points. That is still a lower bound on the native target's distance to the circuit.
+  - Reason: RestedXP's arrow can sit on the far side of the loop. In game, the arrow point was 161 yd away while Blizzard's marker was 22 yd away inside the area. The old single-point check falsely rejected it with a 139 yd gap.
+  - Other candidates still compare against the arrow element only.
+- **Verification tolerance comes from `decision.tolerance`:** `TURNIN_TOLERANCE` is 50 yd, `OBJECTIVE_TOLERANCE` is 100 yd. Every verification logs the native and RestedXP distances, the gap and the limit in debug mode.
+
+### Native-first rules (keep these invariants; see the header of `NavigationResolver.lua`)
+
+- The arrow must be on a guide `.goto` with **no own text**: own or generated `>>` text is an explicit travel instruction, so use coordinates.
+- **The instruction block comes from RestedXP's structure:**
+  - With a `parent`, it is the lines above the waypoint, back to the previous waypoint.
+  - Otherwise it is the lines after the waypoint. If another waypoint comes first, the waypoint is an intermediate route point (coordinates), unless `step.loop` is set; then the whole `#loop` circuit is the objective area.
+- **Block outcome:**
+  - The first pending instruction is a `.turnin` → turn-in candidate.
+  - The block's pending instructions are `.complete` objectives of exactly one quest, with no other pending action → objective candidate.
+  - Anything else (two quests, an accept, a `+text` objective, `.collect`, ...) → coordinates.
+- **Objective eligibility:**
+  - The quest is in the log and not complete.
+  - `GetQuestObjectives` is available.
+  - At least one targeted objective is unfinished.
+  - **Every unfinished objective of the quest is one RestedXP targets in this block.** Blizzard picks its own marker among a quest's unfinished objectives.
+- **Patrol steps (v0.5.1):** if the block holds nothing but placeholders (untagged `+` lines with no letters), or nothing at all, and the step is a sticky `#loop` (`loop` and `sticky`/`completewith`), analyse the combined elements of every `RXPFrame.activeSteps` entry with a higher index.
+  - The block rules then apply to that combined list.
+  - A served step with its own pending waypoint → coordinates.
+  - Real `+text` objectives never delegate. Neither does a non-sticky loop.
+- Text-only headings (`>>text`, `*text`, `.mob`, `.target`, `.macro`) never block an objective.
+- Never classify by quest names or text, and never pick the first of several quests.
 - **Manual waypoints:** while a non-bridge Waypoint UI navigation is tracked, mode changes at the same destination key are held. A new destination key resumes, as in v0.2.
 - **RestedXP supertracking:** RestedXP supertracking the bridge's own native quest is not an outside change (`DescribeOutsideNavigation(expectedQuestID)`). Other quests RestedXP supertracks are recorded as outside changes and never fought.
 
-## Current state (0.4.0)
+## Current state (0.5.2)
 
-- v0.2 coordinate mirroring has passed in-game tests. The v0.3 labels and v0.4 hybrid navigation still need in-game acceptance.
-- The default strategy is `coordinates`. `hybrid` is experimental and only promotes turn-ins.
-- Offline tests (`node tests/run.js`) cover labels, turn-in detection, intermediate-waypoint protection, transitions, fallbacks, idempotency, manual overrides and strategy switching. The mocks assume WoW supertracks one target at a time; that is unverified in Forever.
+- v0.2 coordinate mirroring and v0.4 hybrid turn-ins have passed in-game tests; the developer was happy with hybrid. Commit `5dd7752` is the v0.4 checkpoint.
+- v0.5 adds the experimental `native-first` strategy. It needs in-game acceptance, and its verification limits may need tuning from the debug values.
+- v0.5.1 fixes native-first on RestedXP patrol steps (the Agitators bug) and adds `/rxpwb inspect`. `Sync` records `lastVerification`, so verification failures show up separately from classification failures.
+- The label cleaner requires a letter, so `+1` is never a label.
+- v0.5.2 checks a patrol's native target against the whole circuit, which fixed the in-game false rejection on Agitators.
+- `coordinates` and `hybrid` behaviour is unchanged.
+- Offline tests (`node tests/run.js`) cover labels, hybrid (as regression), and native-first: kill, collect and interact classification, loops, route chains, parent-linked blocks, ambiguity, coverage, verification and tolerance, objective → turn-in, progress events, manual overrides, stale callbacks and strategy switching. The mocks assume WoW supertracks one target at a time; that is unverified in Forever.
 
 ## Roadmap
 
 1. 0.1: proof of concept with manual sync (done).
 2. 0.2: automatic route mirroring (done).
-3. 0.3: step descriptions (implemented).
-4. 0.4: hybrid navigation for quest turn-ins (implemented, experimental).
-5. Next: validate hybrid in game and decide on the default. Possibly cover more quest steps, and ask about an upstream Waypoint UI `contextQuestID`-style API.
-6. 1.0: optional visual-only hiding of the RestedXP arrow, explicit pause and resume, world-coordinate targets, minimal settings, and validation against the launch client.
+3. 0.3: step descriptions (done).
+4. 0.4: hybrid navigation for quest turn-ins (done).
+5. 0.5: native-first quest navigation (implemented, experimental).
+6. Next: validate native-first in game, tune the limits, and decide the default strategy.
+7. 1.0: optional visual-only hiding of the RestedXP arrow, explicit pause and resume, world-coordinate targets, minimal settings, and validation against the launch client.
 
 ## Testing checklist for any change
 
@@ -173,4 +224,6 @@ The load order is set in the `.toc`. All modules share the addon namespace `ns`.
 - Run `/reload` and confirm the bridge loads cleanly, settings persist, and an unchanged destination is not rewritten.
 - Check that the label matches RestedXP's visible instruction for the arrow's waypoint. If it doesn't, use `/rxpwb status` with debug on to see the label source and raw text.
 - Hybrid: a turn-in with intermediate waypoints must follow every waypoint, then go native at the NPC. After the turn-in it must return to coordinates. `/rxpwb status` shows the decision reason.
+- Native-first: kill and collect objectives at their area should go native, with no writes on progress. Routes before them must stay coordinates. Check the "Native target check" debug values.
+- If native-first misclassifies a step, ask for `/rxpwb inspect` output first. It shows every instruction's role, the served steps, quest state and the last verification. Then turn the real guide step into a fixture in `tests/`.
 - Run `node tests/run.js` before handing work back.

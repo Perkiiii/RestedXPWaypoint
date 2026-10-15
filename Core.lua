@@ -30,9 +30,10 @@ local floor = math.floor
 -- Settings (SavedVariables: RXPWaypointBridgeDB)
 --------------------------------------------------------------------------------
 
--- strategy: "coordinates" (v0.3 behaviour, safe default) or "hybrid"
--- (native quest supertracking for eligible turn-ins).
-local STRATEGIES = { coordinates = true, hybrid = true }
+-- strategy: "coordinates" (v0.3 behaviour, safe default), "hybrid" (v0.4:
+-- native quest supertracking for eligible turn-ins) or "native-first" (v0.5:
+-- native supertracking for eligible turn-ins and quest objectives).
+local STRATEGIES = { coordinates = true, hybrid = true, ["native-first"] = true }
 
 local DEFAULTS = {
     autoSync = true,
@@ -134,12 +135,16 @@ function ns.PrintHelp()
     ns.PrintLine("/rxpwb on - enable automatic sync (currently %s)", OnOff(ns.db.autoSync))
     ns.PrintLine("/rxpwb off - disable automatic sync")
     ns.PrintLine("/rxpwb debug - toggle debug messages (currently %s)", OnOff(ns.db.debug))
-    ns.PrintLine("/rxpwb mode coordinates||hybrid - navigation strategy (currently %s)", ns.db.strategy)
+    ns.PrintLine("/rxpwb mode coordinates||hybrid||native-first - navigation strategy (currently %s)", ns.db.strategy)
+    ns.PrintLine("/rxpwb inspect - show how the resolver reads RestedXP's current step")
 end
 
-local function DescribeMode(mode, questID)
+local KIND_NAMES = { turnin = "turn-in", objective = "objective" }
+
+local function DescribeMode(mode, questID, kind)
     if mode == "native" then
-        return questID and format("native quest %d", questID) or "native quest"
+        local text = questID and format("native quest %d", questID) or "native quest"
+        return KIND_NAMES[kind] and format("%s (%s)", text, KIND_NAMES[kind]) or text
     end
     return mode or "none"
 end
@@ -182,12 +187,19 @@ function ns.PrintStatus()
         local decision = ns.Nav.Decide(target, ns.db.strategy)
         if decision.questID then
             local qs = decision.questState or {}
-            ns.PrintLine("Turn-in quest: %d (%s) | in log: %s | ready for turn-in: %s%s",
-                decision.questID, tostring(decision.questName or "?"), YesNo(qs.inLog), YesNo(qs.ready),
-                (decision.pendingTurnIns or 1) > 1 and format(" | %d turn-ins pending here", decision.pendingTurnIns) or "")
+            ns.PrintLine("Quest: %d (%s) | %s | in log: %s | ready for turn-in: %s",
+                decision.questID, tostring(decision.questName or "?"),
+                tostring(decision.classification or decision.kind or "?"), YesNo(qs.inLog), YesNo(qs.ready))
+            if decision.progress then
+                ns.PrintLine("Objectives RestedXP targets here: %s", decision.progress)
+            end
+            if (decision.pendingTurnIns or 1) > 1 then
+                ns.PrintLine("Turn-ins pending at this destination: %d (first one is used)", decision.pendingTurnIns)
+            end
         end
-        ns.PrintLine("Decision (%s): %s - %s", ns.db.strategy, DescribeMode(decision.mode, decision.questID),
-            tostring(decision.reason))
+        ns.PrintLine("Native eligible (%s analysis): %s", decision.analysis or "?", YesNo(decision.nativeEligible))
+        ns.PrintLine("Decision (%s): %s - %s", ns.db.strategy,
+            DescribeMode(decision.mode, decision.questID, decision.kind), tostring(decision.reason))
     end
 
     local nav = ns.WUI.GetNavigation()
@@ -205,7 +217,7 @@ function ns.PrintStatus()
         ns.db.autoSync and (sync.running and " (running)" or " (not running)") or "",
         ns.db.strategy, OnOff(ns.db.debug))
     ns.PrintLine("Active mode: %s%s | bridge owns active destination: %s",
-        DescribeMode(sync.mode, sync.questID), sync.pending and " (transition in progress)" or "",
+        DescribeMode(sync.mode, sync.questID, sync.kind), sync.pending and " (transition in progress)" or "",
         YesNo(sync.bridgeActive))
     if sync.lastTransition then
         ns.PrintLine("Last transition: %s%s", sync.lastTransition.text, Ago(sync.lastTransition.time))
@@ -254,18 +266,21 @@ end
 local STRATEGY_ALIASES = {
     coordinates = "coordinates", coordinate = "coordinates", coords = "coordinates",
     hybrid = "hybrid",
+    ["native-first"] = "native-first", nativefirst = "native-first", native = "native-first",
 }
 
 local function SetStrategy(argument)
     local strategy = STRATEGY_ALIASES[argument or ""]
     if not strategy then
-        ns.Print("Navigation strategy: %s. Use /rxpwb mode coordinates or /rxpwb mode hybrid.", ns.db.strategy)
+        ns.Print("Navigation strategy: %s. Use /rxpwb mode coordinates, hybrid or native-first.", ns.db.strategy)
         return
     end
     if not STRATEGIES[strategy] then return end
     ns.db.strategy = strategy
-    if strategy == "hybrid" then
-        ns.Print("Navigation strategy: hybrid (experimental). Eligible quest turn-ins use native quest navigation.")
+    if strategy == "native-first" then
+        ns.Print("Navigation strategy: native-first (experimental). Quest turn-ins and objectives RestedXP is leading you to use native quest navigation; travel uses RestedXP coordinates.")
+    elseif strategy == "hybrid" then
+        ns.Print("Navigation strategy: hybrid. Eligible quest turn-ins use native quest navigation.")
     else
         ns.Print("Navigation strategy: coordinates. All destinations use RestedXP coordinates.")
     end
@@ -275,7 +290,47 @@ local function SetStrategy(argument)
     ns.Sync.OnStrategyChanged()
 end
 
+-- On-demand dump of what the navigation resolver sees (never printed automatically).
+function ns.PrintInspect()
+    ns.Print("inspect (strategy %s)", ns.db.strategy)
+    local target, reason = ns.RXP.GetTarget()
+    if not target then
+        ns.PrintLine("No RestedXP waypoint: %s", tostring(reason))
+        return
+    end
+    ns.PrintLine("RXP waypoint: step %s, map %s @ %s, %s%s", tostring(target.stepIndex or "-"), tostring(target.mapID),
+        ns.FormatCoord(target.x), ns.FormatCoord(target.y), reason and (" (not usable: " .. reason .. ")") or "")
+    for _, line in ipairs(ns.Nav.Inspect(target.element)) do
+        ns.PrintLine("%s", line)
+    end
+    if reason then return end
+
+    local decision = ns.Nav.Decide(target, "native-first")
+    ns.PrintLine("Native-first analysis: %s - %s", YesNo(decision.nativeEligible), tostring(decision.reason))
+    if decision.questID then
+        ns.PrintLine("Candidate: quest %d (%s), %s%s", decision.questID, tostring(decision.questName or "?"),
+            tostring(decision.classification or decision.kind or "?"),
+            decision.progress and (", targets " .. decision.progress) or "")
+    end
+    if ns.db.strategy ~= "native-first" then
+        local current = ns.Nav.Decide(target, ns.db.strategy)
+        ns.PrintLine("Current strategy (%s): %s - %s", ns.db.strategy,
+            DescribeMode(current.mode, current.questID, current.kind), tostring(current.reason))
+    end
+
+    local sync = ns.Sync.GetState()
+    ns.PrintLine("Active mode: %s", DescribeMode(sync.mode, sync.questID, sync.kind))
+    if sync.lastVerification then
+        local v = sync.lastVerification
+        ns.PrintLine("Last native verification: quest %d %s - %s%s", v.questID, v.ok and "passed" or "FAILED",
+            tostring(v.detail), Ago(v.time))
+    else
+        ns.PrintLine("Last native verification: none this session")
+    end
+end
+
 local commands = {
+    inspect = ns.PrintInspect,
     status = ns.PrintStatus,
     sync = function() ns.Sync.SyncNow() end,
     on = EnableAutoSync,

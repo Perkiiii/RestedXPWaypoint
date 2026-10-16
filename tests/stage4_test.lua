@@ -584,7 +584,7 @@ for _, pathfinding in ipairs({ false, true }) do
   writes = H.wui.writes
   H.fire("QUEST_LOG_UPDATE"); H.advance(3)
   check("T4 icon-only change at unchanged coordinates (" .. tag .. ")", H.navAt(40) and H.wui.writes == writes + 1
-    and H.wui.nav.iconTexture == "Interface\\AddOns\\WaypointUI\\Art\\Icons\\CompleteQuest")
+    and H.wui.nav.iconTexture == "Interface\\AddOns\\RestedXPWaypoint\\Art\\Icons\\QuestComplete")
 
   H.wui.rejects = 1; obj.text = "Turn in soon"; H.fire("QUEST_LOG_UPDATE"); H.advance(3)
   local rejected = H.wui.nav.name ~= obj.text

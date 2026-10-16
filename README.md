@@ -4,9 +4,10 @@ An **unofficial companion addon for World of Warcraft Forever**. RestedXP Guides
 chooses the route; RestedXP Waypoint mirrors its resolved waypoint into Waypoint
 UI's in-world navigation. It is not affiliated with either project.
 
-Current development version: **0.6.1**, undergoing final release-candidate testing.
-This is not a v1.0 release. Coordinates is the default for new installations;
-existing settings are preserved. Native First remains experimental.
+See `RestedXPWaypoint_Camelot.toc` or `/rxpw status` for the installed version,
+and [CHANGELOG.md](CHANGELOG.md) for release notes. Coordinates is the default
+for new installations; existing settings are preserved. Native First remains
+experimental.
 
 ## Requirements and installation
 
@@ -20,10 +21,10 @@ Install these addons separately:
 | RestedXP Guides | `RXPGuides` | v4.11.23 |
 | Waypoint UI | `WaypointUI` | 1.7.3 |
 
-1. Close WoW. Extract the release-candidate ZIP into your Forever client's
+1. Close WoW. Extract the release ZIP into your Forever client's
    `Interface/AddOns` directory.
 2. Check the resulting layout is `Interface/AddOns/RestedXPWaypoint/`, containing
-   `RestedXPWaypoint_Camelot.toc`, eight Lua modules and `Art/`. Avoid a second
+   `RestedXPWaypoint_Camelot.toc`, the Lua modules and `Art/`. Avoid a second
    nested `RestedXPWaypoint` folder. Keep the folder name exactly as shown.
 3. Enable RestedXP Waypoint and both dependencies in the character-selection
    AddOns list, then start a RestedXP guide with a coordinate waypoint.
@@ -51,9 +52,13 @@ repeatedly switching as patrol points cycle. Native targets are rechecked when
 the same quest moves to a different activity area; failed checks fall back to
 RestedXP coordinates. Item `.collect` instructions alone are not native objectives.
 
-Manual waypoints are respected at the current handled destination. A genuinely
-new RestedXP destination can resume automatic navigation. During a pending native
-transition, a manual pin or quest selection cancels delayed work. Use `/rxpw off`
+Manual pins and quest selections pause automatic navigation even while RestedXP
+advances. After external tracking is cleared, navigation resumes at the current
+RestedXP destination after one second of idle tracking. At login, one inherited
+quest can serve as an unknown-origin baseline; a same-quest selection made before
+reload cannot be distinguished from inherited automatic tracking. Pins remain
+protected. During a pending native transition, an external selection cancels
+delayed work. Use `/rxpw off`
 for a longer pause; `/rxpw sync` explicitly applies the current route even while
 auto-sync is off. Invalid or stale RestedXP data leaves existing navigation alone.
 
@@ -66,14 +71,20 @@ to `Step N`. Quest icons show Available (`!`), Incomplete (silver `?`) and Compl
 
 Service markers cover Flight Master, Class Trainer, Profession Trainer, Food &
 Drink, Repair, Innkeeper, Stable Master, Vendor, Banker and Grind. Vendor and
-Banker share a bags glyph. Services use their own colours; generic navigation
-uses Waypoint UI's fallback. Classification uses guide tags and waypoint-local
+Banker share a bags glyph. Services use their own colours. Other RestedXP
+waypoints (travel, route points, unrecognised steps) show this addon's own
+default icon, an arrow based on its logo. Waypoint UI tints it with the same
+colour as the marker (its custom-waypoint colour, or the one you chose in
+Waypoint UI). Classification uses guide tags and waypoint-local
 instruction context. English purchase/repair text is used conservatively where
 RestedXP lacks a dedicated tag; unfamiliar text can retain the generic marker.
 
+Normal available (`!`) and ready (`?`) quests use the classic WoW quest yellow
+(#FFD100) for the marker and a gold glyph (tint-ready copies of Waypoint UI's
+icons); quest types such as campaign or repeatable keep Waypoint UI's colours.
 Quest icons and quest colours rely on Waypoint UI's 1.7.x shipped icon files.
-Other versions fall back to the generic marker. The bundled service art has no
-such version gate. Explicit colours also tint icons and beams; Waypoint UI's
+Other versions show the default icon instead. The bundled service and default
+art has no such version gate. Explicit colours also tint icons and beams; Waypoint UI's
 private custom quest palettes are not copied.
 
 ## Settings and previews
@@ -86,7 +97,17 @@ Appearance, Waypoint Preview and Advanced sections.
   commands. Changes from either side refresh an open page.
 - Quest Icons, Service Icons and Custom Colours default to on. These affect the
   custom waypoints this addon creates; native quest markers use Waypoint UI's own
-  presentation. Size, beams, animation and sound remain Waypoint UI settings.
+  presentation. Turning Quest or Service Icons off shows Waypoint UI's generic
+  icon for those destinations; the default icon on other waypoints is not
+  affected by these settings. Size, beams, animation and sound remain Waypoint
+  UI settings.
+- Bridge navigation allows the new-navigation sound once per new RestedXP
+  progression step; login, restoration and updates within that step stay quiet.
+  Waypoint UI's independent marker-intro sounds can still repeat.
+  For less repetitive audio, enable Waypoint UI's Audio > Customize > Use Custom
+  Sound, then Mute "When Waypoint is shown..." and "When Pinpoint is shown...".
+  Keep "When commencing /way navigation..." enabled if desired. These preferences
+  also affect Waypoint UI markers outside this addon.
 - Hide RestedXP Arrow mirrors RestedXP's own profile option. Its waypoint data
   continues updating. This option is separate from `RXPWDB` and Restore Defaults.
 - Preview selection, Close/Far, Show, Next, All and Stop use the same preview
@@ -150,22 +171,12 @@ Turn debug off afterward. `/console scriptErrors 1` makes Lua errors visible.
 Test persistence after a normal logout/full restart, since settings may not yet
 have been flushed to disk during a running session.
 
-## Development and release verification
-
-There is no runtime build step. Run `npm ci --prefix tests`, then
-`node tests/run.js` for offline mocked tests. They do not prove live rendering or
-Forever behaviour. Tools and tests are excluded from runtime release packages.
-`python tools/package_release.py` creates a uniquely named 0.6.1 RC archive under
-ignored `.release/`, with an allowlisted runtime tree and verified entry hashes.
+## Earlier installations and credits
 
 The project was named RXP Waypoint Bridge through v0.5.7. Old saved variables are
 not automatically imported from another profile; keep a backup and select the
-desired settings in the new page. Machine-specific junction migration is a
-maintainer tool, not an installation requirement.
+desired settings in the new page.
 
-Detailed history and acceptance evidence live in [docs/](docs/), including the
-[Stage 6 readiness report](docs/STAGE6_RELEASE_READINESS.md). The release ZIP
-contains this README; development reports are available in the source checkout.
-
-This unofficial addon does not bundle RestedXP or Waypoint UI code or art.
-Artwork provenance and distribution terms should be recorded before public release.
+The dependency addons are installed separately. Two bundled quest glyphs are
+derived from Waypoint UI artwork; see [ARTWORK.md](ARTWORK.md) for provenance
+and the outstanding distribution-permission review. No affiliation is implied.

@@ -36,17 +36,18 @@
 -- Write rules
 --   * Waypoint UI is written only when the desired state differs from the
 --     last one the bridge handled (or on /rxpw sync).
---   * Missing, stale or invalid RestedXP targets never clear or replace the
---     current navigation.
+--   * Missing, stale or invalid RestedXP targets never replace active navigation.
+--     An inactive, provably obsolete owned marker can be retired separately.
 --   * A destination Waypoint UI rejected is not retried until the target
 --     changes or the player zones; native verification failures follow the
 --     activity/progress/cooldown retry policy documented below.
---   * The bridge never reacts to outside navigation changes by writing. If
---     the player changes what Waypoint UI follows, the bridge leaves it alone
---     until RestedXP moves to a new destination; while a waypoint the bridge
---     did not create is tracked, mode changes at the same destination are
---     also held back. RestedXP supertracking the bridge's own native quest
---     counts as the bridge's navigation, not an outside change.
+--   * An observed external waypoint temporarily suspends automatic writes,
+--     even if RestedXP advances. After tracking becomes idle and settles,
+--     re-evaluate fresh RXP data once. Clearing our own waypoint alone never
+--     grants permission to resume. RestedXP supertracking the bridge's own
+--     native quest counts as the bridge's navigation, not an outside change.
+--     Observed RXP setters linked to active work retain automatic attribution
+--     across subsequent writes/steps; unknown quest selections stay protected.
 --   * On the first evaluation after login or /rxpw on, an already tracked
 --     waypoint the bridge did not create is respected the same way.
 --   * Labels: same coordinates, different description -> the coordinate
@@ -80,6 +81,9 @@ local SETTLE_TIME = 0.2
 -- Delay diagnostics after our writes; this is NOT an override-permission window.
 local SELF_WRITE_GUARD = 1.0
 local OUTSIDE_CHECK_DELAY = 0.3
+-- Separate from diagnostic/event settling: keep navigation idle for a full
+-- second after an external pin or quest has stopped controlling navigation.
+local RESUME_DELAY = 1.0
 local NATIVE_SET_DELAY = 0.25
 local NATIVE_VERIFY_DELAY = 0.6
 -- Lets RestedXP process quest events (mark turn-ins complete) first.
@@ -129,6 +133,7 @@ local state = {
     watchedLabel = nil,      -- RestedXP's own label at the last evaluation
     lastLabelCheck = 0,
     handledQuest = nil,      -- native: supertracked quest ID
+    ownedQuest = nil,        -- last native quest we set/adopted, including cancelled verification
     handledId = nil,         -- native: decision.nativeId (hybrid: key#quest; native-first: kind:quest)
     handledKind = nil,       -- native: "turnin" or "objective"
     handledProgress = nil,   -- native objective: last logged progress
@@ -164,6 +169,16 @@ local state = {
     external = nil,          -- description of an outside navigation change
     selfWriteUntil = 0,
     outsideCheckPending = false,
+    manualOverride = nil,   -- external pin/quest; idleSince starts the resume delay
+    guideTrackingQuest = nil, -- observed RXP selection, retained until superseded
+    trackingEvidence = nil, -- last observed quest setter, never an ID exemption
+    coordinateMarker = nil, -- previous successful coordinate target + WUI session
+    markerCleanup = nil, -- last retirement outcome for status
+    retiringMarker = false, -- synchronous public cleanup callback guard
+    lastTrackingLog = nil,
+    startupObservation = false, -- initial login/reload observation, not a timer window
+    inheritedQuest = nil,   -- one unclassified startup quest; never a manual-intent claim
+    writingCoordinates = false,
     questEvalPending = false,
     questEvalAt = nil,
     questTransitionUntil = nil,
@@ -226,6 +241,12 @@ function Sync.GetState()
         lastFailure = state.lastFailure,
         lastVerification = state.lastVerification,
         external = state.external,
+        overrideActive = state.manualOverride ~= nil,
+        resumePending = state.manualOverride ~= nil and state.manualOverride.idleSince ~= nil,
+        guideTrackingQuest = state.guideTrackingQuest,
+        inheritedQuest = state.inheritedQuest,
+        markerCleanup = state.markerCleanup,
+        trackingEvidence = state.trackingEvidence,
         counters = state.counters,
     }
 end
@@ -297,7 +318,8 @@ end
 --     the icon Waypoint UI's native quest marker would show for that quest
 --     (Nav.GetPresentation + WUI.GetQuestIcon): "!" to accept, silver "?"
 --     while incomplete, gold "?" when ready. Service steps get their service
---     icon and colour; other waypoints keep Waypoint UI's default icon.
+--     icon and colour; other waypoints get the bridge's DefaultWaypoint icon,
+--     tinted by Waypoint UI with the marker's own colour (WUI.ResolveAppearance).
 -- Fills target.label/labelInfo/stripCoordinates/presentation/iconTexture/tint;
 -- returns contextDecision, iconName, tintName. No logging, no state: status
 -- uses it too.
@@ -336,13 +358,31 @@ local function PrepareCoordinateTarget(target, decision)
         state.lastContextLabelLog = logKey
         RXPW.Debug("Coordinate waypoint: \"%s\", colour %s, icon %s.", tostring(target.label),
             target.tint and tostring(tintName) or "default",
-            iconName and (presentation.questID
+            not iconName and "Waypoint UI default"
+                or not presentation and format("%s (no quest or service context)", iconName)
+                or presentation.questID
                 and format("%s (quest %d, %s)", iconName, presentation.questID, tostring(presentation.source))
-                or format("%s (%s)", iconName, tostring(presentation.source))) or "default")
+                or format("%s (%s)", iconName, tostring(presentation.source)))
     end
 end
 
+-- Session-only audio opportunity. A restart/revision/unknown source establishes
+-- a quiet baseline. Failed writes do not consume it; successful adoption does.
+local function ObserveAudioStep(target)
+    local current = RXP.GetAudioStep(target)
+    local previous = state.audioStep
+    if not current or state.audioBaseline or not previous
+        or (current.guide == previous.guide and current.revision ~= previous.revision) then
+        state.audioPending = false
+    elseif current.guide ~= previous.guide or current.step ~= previous.step then
+        state.audioPending = true
+    end
+    state.audioStep = current
+    state.audioBaseline = nil
+end
+
 local function NoteStep(target)
+    ObserveAudioStep(target)
     if target.stepIndex ~= state.lastStepIndex then
         RXPW.Debug("RXP waypoint changed: Step %s -> Step %s",
             tostring(state.lastStepIndex or "-"), tostring(target.stepIndex or "-"))
@@ -391,6 +431,8 @@ end
 --------------------------------------------------------------------------------
 
 local function RecordSuccess(target, result)
+    state.ownedQuest = nil
+    state.audioPending = false
     state.handledMode = "coordinates"
     state.handledKey = target.key
     state.handledLabel = target.label
@@ -409,6 +451,8 @@ local function RecordSuccess(target, result)
         stepIndex = target.stepIndex,
         time = GetTime(),
     }
+    state.coordinateMarker = { target = target, navigation = WUI.GetNavigation() }
+    state.markerCleanup = nil
     SetExternal(nil)
     SetResult(result)
 end
@@ -416,18 +460,33 @@ end
 -- Writes the coordinate target to Waypoint UI and records the outcome.
 -- labelOnly: same destination, new label; a failure then does not mark the
 -- destination as rejected.
-local function Apply(target, suppressAudio, how, labelOnly)
+local ObserveManualOverride
+local function Apply(target, how, labelOnly)
+    ObserveAudioStep(target)
+    -- suppressAudio only controls MapPin's creation sound. Marker intro audio
+    -- is independent in Waypoint UI 1.7.3 and has no public per-write control.
+    local suppressAudio = labelOnly or not state.audioPending or WUI.IsShowingTarget(target)
     state.desiredPresentation = target
     state.generation = state.generation + 1
     state.pendingNative = nil
     state.nativeHold = nil
     state.selfWriteUntil = GetTime() + SELF_WRITE_GUARD
     RXPW.Debug("Bridge coordinate write at %.3f (%s).", GetTime(), how)
+    state.writingCoordinates = true
     local ok, err = WUI.SetNavigation(target, suppressAudio)
+    state.writingCoordinates = false
     if ok then
         state.lastPresentationWrite = GetTime()
         RecordSuccess(target, "synced (" .. how .. ")")
-        RXPW.Debug("Waypoint UI synchronization successful (%s).", how)
+        -- A setter can dispatch navigation events synchronously. Classify the
+        -- final selection, not the intermediate state inside our own write.
+        ObserveManualOverride(GetTime())
+        if state.manualOverride then
+            SetResult("paused: external navigation selected during coordinate write")
+            RXPW.Debug("Coordinate write finished; external navigation now has priority.")
+        else
+            RXPW.Debug("Waypoint UI synchronization successful (%s).", how)
+        end
     else
         if not labelOnly then state.failedKey = target.key end
         SetResult("failed (" .. how .. "): " .. err)
@@ -437,7 +496,7 @@ end
 
 -- Switches to (or re-creates) coordinate navigation, leaving native mode
 -- first if needed.
-local function ToCoordinates(target, how, suppressAudio)
+local function ToCoordinates(target, how)
     if state.handledMode == "native" then
         local questID = state.handledQuest
         Nav.ReleaseNativeQuest(questID)
@@ -447,7 +506,7 @@ local function ToCoordinates(target, how, suppressAudio)
         state.handledKey = nil
         state.handledLabel = nil
     end
-    return Apply(target, suppressAudio, how)
+    return Apply(target, how)
 end
 
 local ScheduleEvaluation
@@ -457,6 +516,7 @@ local function RefreshLabel(target)
     if not WUI.IsShowingTarget(target) then
         return
     end
+    state.audioPending = false -- the new step already has its correct destination
     if WUI.HasTargetLabel(target) then
         if state.handledLabel ~= target.label or state.handledIcon ~= target.iconTexture
             or state.presentationRetryAt then
@@ -476,7 +536,7 @@ local function RefreshLabel(target)
 
     RXPW.Debug("Label/icon changed: \"%s\" -> \"%s\" (same destination).",
         tostring(state.handledLabel), target.label)
-    local ok, err = Apply(target, true, "label update", true)
+    local ok, err = Apply(target, "label update", true)
     if not ok then
         state.presentationRetryAt = GetTime() + PRESENTATION_RETRY_DELAY
         RXPW.Debug("Label update failed: %s.", err)
@@ -592,7 +652,7 @@ local function FailNative(operation, why, manual, progress, activity)
         RXPW.Print("Native quest navigation unavailable (%s); using RestedXP coordinates.", why)
     end
     PrepareCoordinateTarget(current, nextDecision)
-    local ok, err = ToCoordinates(current, "native fallback", true)
+    local ok, err = ToCoordinates(current, "native fallback")
     if not ok then
         NoteFailure(format("native quest %d: %s; coordinate fallback failed: %s", questID, why, err))
     end
@@ -633,6 +693,8 @@ BeginNative = function(target, decision, how, manual, reverify)
             return
         end
         state.pendingNative = nil
+        ObserveAudioStep(current)
+        state.audioPending = false -- verified native adoption; no synthetic sound
         state.failedKey = nil
         state.handledKey = current.key
         state.handledActivity = fresh.activity
@@ -689,6 +751,7 @@ BeginNative = function(target, decision, how, manual, reverify)
     -- Clearing an inactive bridge session and re-setting the quest would only
     -- restart Waypoint UI's presentation. Explicit manual sync retains its setter.
     if not manual and Nav.IsNativeQuestActive(questID) then
+        state.ownedQuest = questID
         operation.navigation = CaptureNavigation()
         RXPW.Debug("Keeping existing native quest %d at %.3f; verifying without a navigation write.", questID, GetTime())
         C_Timer.After(NATIVE_VERIFY_DELAY, Verify)
@@ -717,6 +780,7 @@ BeginNative = function(target, decision, how, manual, reverify)
             FailNative(operation, "SetSuperTrackedQuestID failed", manual, decision.progress)
             return
         end
+        state.ownedQuest = questID
         C_Timer.After(NATIVE_VERIFY_DELAY, Verify)
     end
 
@@ -759,7 +823,7 @@ end
 
 local function EnsureCoordinates(target, trigger)
     if state.handledMode == "native" then
-        local ok, err = ToCoordinates(target, "automatic", true)
+        local ok, err = ToCoordinates(target, "automatic")
         if not ok then
             RXPW.Print("Automatic sync failed: %s. Will retry when the destination changes.", err)
         end
@@ -771,10 +835,6 @@ local function EnsureCoordinates(target, trigger)
         RefreshLabel(target)
         return
     end
-    if target.key == state.failedKey then
-        return
-    end
-
     RXPW.Debug("New destination: %s [label from %s]", RXPW.DescribeTarget(target), target.labelInfo.source)
 
     if state.handledMode == nil then
@@ -783,18 +843,21 @@ local function EnsureCoordinates(target, trigger)
             PauseForForeign(target, foreign)
             return
         end
-        if WUI.IsShowingTarget(target) then
-            if WUI.HasTargetLabel(target) then
-                RecordSuccess(target, "already shown by Waypoint UI")
-                RXPW.Debug("Waypoint UI already shows this destination; nothing to write.")
-            else
-                Apply(target, true, "label update", true)
-            end
-            return
-        end
     end
+    -- A failed attempt may have become active independently before its retry.
+    -- Adopt it without recreating the navigation (or its marker intro).
+    if WUI.IsShowingTarget(target) then
+        if WUI.HasTargetLabel(target) then
+            RecordSuccess(target, "already shown by Waypoint UI")
+            RXPW.Debug("Waypoint UI already shows this destination; nothing to write.")
+        else
+            Apply(target, "label update", true)
+        end
+        return
+    end
+    if target.key == state.failedKey then return end
 
-    local ok, err = Apply(target, true, "automatic")
+    local ok, err = Apply(target, "automatic")
     if not ok then
         RXPW.Print("Automatic sync failed: %s. Will retry when the destination changes.", err)
     end
@@ -845,6 +908,9 @@ end
 local function EnsureNative(target, decision, trigger)
     local id = decision.nativeId
     if state.handledMode == "native" and state.handledId == id then
+        if state.audioPending and not state.pendingNative and Nav.IsNativeQuestActive(decision.questID) then
+            state.audioPending = false
+        end
         -- Same quest and kind: Blizzard and Waypoint UI update progress and the
         -- native target themselves; never re-supertrack. A different RestedXP
         -- activity is re-verified, still without re-supertracking (F8).
@@ -878,6 +944,150 @@ local function EnsureNative(target, decision, trigger)
     BeginNative(target, decision, "automatic")
 end
 
+-- Record real external pins/quests, never absence of our own navigation.
+-- Events observe selections immediately; polling covers automatic arrival and
+-- clients/addons that omit an event. All writes still go through Evaluate.
+ObserveManualOverride = function(now)
+    if not (state.ticker and RXPW.db.autoSync and state.inWorld)
+        or (RXPW.Preview and RXPW.Preview.IsActive()) then return end
+    if RXPW.Preview and WUI.HasNavigationWithFlag("RestedXPWaypoint-Preview") then return end
+    local foreign = WUI.GetForeignNavigationName()
+    local quest, priority, empty = Nav.GetTrackingState()
+    local operation = state.pendingNative
+    local activeQuest = quest and Nav.IsNativeQuestActive(quest)
+    -- Startup has no preceding navigation observation and therefore no evidence
+    -- of a selection. Capture one initial quest, even if the RXP arrow loads
+    -- later. A replacement selection or any external pin closes this phase.
+    if state.startupObservation and not state.manualOverride and not foreign and activeQuest
+        and not state.inheritedQuest then
+        state.inheritedQuest = quest
+        RXPW.Debug("Inherited startup quest %d: origin unknown; RestedXP synchronization may begin.", quest)
+    end
+    if state.inheritedQuest and not quest and priority == nil and empty and not operation then
+        state.inheritedQuest = nil -- observed idle clearance; a later selection is new
+        state.startupObservation = false
+    end
+    if not quest and priority == nil and empty and not operation then
+        state.guideTrackingQuest, state.trackingEvidence = nil, nil
+    end
+    local allowedQuest = not (state.manualOverride and state.manualOverride.protected) and (quest == state.ownedQuest
+        or (not state.manualOverride and quest == state.guideTrackingQuest)
+        or (not state.manualOverride and quest == state.inheritedQuest)
+        or (state.handledMode == "native" and quest == state.handledQuest)
+        or (operation and quest == operation.questID))
+    local externalQuest = activeQuest and not allowedQuest
+    local description = foreign and format("another waypoint is tracked (%s)", foreign)
+        or (externalQuest and format("quest %d is supertracked", quest))
+    if description then
+        if foreign or (externalQuest and quest ~= state.guideTrackingQuest) then
+            state.guideTrackingQuest = nil
+            if foreign or (state.trackingEvidence and state.trackingEvidence.questID ~= quest) then
+                state.trackingEvidence = nil
+            end
+        end
+        state.startupObservation, state.inheritedQuest = false, nil
+        state.ownedQuest = nil
+        if not state.manualOverride then
+            RXPW.Debug("Synchronization paused: external navigation selected (%s). Resumes after it is no longer tracked.", foreign or description)
+            state.manualOverride = {
+                questCandidate = externalQuest and quest or nil,
+            }
+        elseif foreign or state.manualOverride.questCandidate ~= quest then
+            state.manualOverride.protected = true
+            state.manualOverride.questCandidate = nil
+        end
+        state.manualOverride.idleSince = nil
+        SetExternal(description)
+    elseif state.manualOverride then
+        if WUI.IsOwnedNavigationTracked()
+            or (state.handledMode == "native" and Nav.IsNativeQuestActive(state.handledQuest)) then
+            -- Navigation was restored independently: consume the override so
+            -- clearing that bridge destination later cannot restart it.
+            state.manualOverride = nil
+            ScheduleEvaluation() -- refresh any presentation deferred by the override
+        elseif quest or priority ~= nil or not empty or state.pendingNative then
+            state.manualOverride.idleSince = nil
+        elseif not state.manualOverride.idleSince then
+            state.manualOverride.idleSince = now
+            RXPW.Debug("External navigation ended; waiting one second before resuming RestedXP.")
+            ScheduleEvaluation(RESUME_DELAY)
+        end
+    end
+end
+
+-- Setter evidence applies to the current selection, not a quest-ID whitelist.
+-- Manual/unknown selections lock an override even for a previously recognized ID.
+local function OnQuestSelection(quest, source)
+    if not state.ticker or not state.inWorld
+        or (state.pendingNative and state.pendingNative.writing)
+        or (RXPW.Preview and RXPW.Preview.IsActive()) then return end
+    if quest == 0 then
+        state.trackingEvidence, state.guideTrackingQuest = nil, nil
+        return
+    end
+    state.trackingEvidence = { questID = quest, source = source }
+    if source ~= "RestedXP setter" then
+        state.guideTrackingQuest, state.inheritedQuest = nil, nil
+        state.manualOverride = state.manualOverride or { questCandidate = quest }
+        state.manualOverride.protected = true
+        ObserveManualOverride(GetTime())
+    end
+    local classification = state.manualOverride and state.manualOverride.protected and "external selection protected"
+        or source == "RestedXP setter" and "awaiting fresh guide association" or "origin unproven; protected"
+    local logKey = tostring(quest) .. "|" .. source .. "|" .. classification
+    if state.lastTrackingLog ~= logKey then
+        state.lastTrackingLog = logKey
+        RXPW.Debug("Tracking attribution: quest %d, %s; %s.", quest, source, classification)
+    end
+    ScheduleEvaluation()
+end
+
+local function RecognizeGuideTracking(target)
+    local quest = Nav.GetSuperTrackedQuest()
+    if not quest or not Nav.IsNativeQuestActive(quest) then return end
+    local override = state.manualOverride
+    if override and (override.protected or override.questCandidate ~= quest) then return end
+    local evidence = state.trackingEvidence
+    if not evidence or evidence.questID ~= quest or evidence.source ~= "RestedXP setter" then return end
+    if not Nav.HasActiveQuest(target.element, quest) and state.guideTrackingQuest ~= quest then return end
+    if not override and state.guideTrackingQuest == quest then return end
+    state.guideTrackingQuest = quest
+    state.inheritedQuest = nil
+    state.manualOverride, state.nativeHold = nil, nil
+    SetExternal(nil)
+    RXPW.Debug("Automatic guide quest tracking recognized: quest %d (observed RestedXP setter and active guide work); following RestedXP.", quest)
+end
+
+local function RetireObsoleteMarker(target)
+    local nav = WUI.GetNavigation()
+    if not WUI.HasNavigationWithFlag(RXPW.OWNER_FLAG) then return end
+    local previous = state.coordinateMarker
+    local obsolete = target and RXPW.IsFiniteNumber(nav.mapID) and RXPW.IsFiniteNumber(nav.x) and RXPW.IsFiniteNumber(nav.y)
+        and RXP.DestinationKey(nav.mapID, nav.x * 100, nav.y * 100) ~= target.key
+    if not obsolete and previous and previous.navigation == nav then
+        obsolete = RXP.IsPreviousTargetObsolete(previous.target)
+    end
+    if not obsolete then return end
+    local step = previous and previous.navigation == nav and previous.target.stepIndex or "unknown"
+    -- Public callbacks may be synchronous. Observe their final state only;
+    -- cleanup itself must never consume the override or authorize a write.
+    state.retiringMarker = true
+    local removed, why = WUI.RetireInactiveNavigation(nav)
+    state.retiringMarker = false
+    local message = format("%s (Step %s): %s", tostring(nav.name), tostring(step), why)
+    if state.markerCleanup ~= message then
+        state.markerCleanup = message
+        RXPW.Debug("Obsolete bridge marker: %s (Step %s); active ownership %s; %s.",
+            tostring(nav.name), tostring(step), WUI.IsOwnedNavigationTracked() and "yes" or "no", why)
+    end
+    if removed then
+        state.coordinateMarker = nil
+        state.generation = state.generation + 1
+        state.pendingNative = nil
+    end
+    ObserveManualOverride(GetTime())
+end
+
 -- Automatic evaluation of RestedXP's current target.
 -- trigger: "target" (RestedXP target changed), "quest", "strategy", "zone".
 local function Evaluate(trigger)
@@ -909,6 +1119,7 @@ local function Evaluate(trigger)
 
     local target, reason = RXP.GetTarget()
     if reason or not target then
+        if state.manualOverride then RetireObsoleteMarker(nil) end
         reason = reason or "no RestedXP waypoint"
         if reason ~= state.lastInvalidReason then
             state.lastInvalidReason = reason
@@ -918,6 +1129,41 @@ local function Evaluate(trigger)
         return
     end
     state.lastInvalidReason = nil
+    -- Observation and attribution precede the override gate. A paused bridge
+    -- still sees the current guide step; no cached target is used on resume.
+    NoteStep(target)
+    ObserveManualOverride(GetTime())
+    state.startupObservation = false -- first valid RXP observation ends startup acquisition
+    RecognizeGuideTracking(target)
+    ObserveManualOverride(GetTime())
+    local override = state.manualOverride
+    if override then
+        RetireObsoleteMarker(target)
+        local observed = target.key .. "|" .. tostring(target.stepIndex)
+        if override.observedTarget ~= observed then
+            override.observedTarget = observed
+            RXPW.Debug("Synchronization blocked by external navigation; RestedXP is at Step %s (%s).",
+                tostring(target.stepIndex), target.key)
+        end
+        if not override.idleSince or state.pendingNative then return end
+        local wait = RESUME_DELAY - (GetTime() - override.idleSince)
+        if wait > 0.001 then ScheduleEvaluation(wait); return end
+    end
+    if override then
+        -- One permission to evaluate fresh data, not a cached destination.
+        -- Forget handled/native-hold identities without releasing navigation
+        -- or resetting native failure policy. The pipeline records the result.
+        state.manualOverride = nil
+        state.generation = state.generation + 1
+        state.nativeHold = nil
+        state.handledMode, state.handledKey = nil, nil
+        state.handledLabel, state.handledIcon = nil, nil
+        state.desiredPresentation, state.presentationRetryAt = nil, nil
+        ClearHandledNative()
+        state.questTransitionManual = nil
+        state.audioBaseline, state.audioPending = true, false
+        RXPW.Debug("External navigation ended; resuming the current RestedXP destination.")
+    end
     local selected = state.questTransitionManual
     state.questTransitionUntil, state.questTransitionManual = nil, nil
     if selected then
@@ -926,7 +1172,7 @@ local function Evaluate(trigger)
         PauseForForeign(target, selected)
         return
     end
-    NoteStep(target)
+    if override then ObserveAudioStep(target) end -- consume the quiet resume baseline
     state.watchedLabel = target.label
 
     local decision = Nav.Decide(target, RXPW.db.strategy, Sync.GetDecisionContext())
@@ -1038,6 +1284,7 @@ local function CheckActivity(now)
 end
 
 local function Tick()
+    ObserveManualOverride(GetTime())
     if RXP.HasTargetChanged() then
         state.pendingSince = GetTime()
         if state.questTransitionUntil then
@@ -1056,7 +1303,7 @@ local function Tick()
     CheckActivity(now)
 end
 
-local function OnQuestEvent(event)
+local function OnQuestEvent(event, ...)
     if not state.ticker or not state.inWorld then return end
     if event == "QUEST_ACCEPTED" or event == "QUEST_TURNED_IN" then
         local now = GetTime()
@@ -1081,16 +1328,27 @@ local function CheckOutsideNavigation()
 
     local expectedQuest = state.handledMode == "native" and state.handledQuest or nil
     local description = WUI.DescribeOutsideNavigation(expectedQuest)
+    if not state.manualOverride and state.guideTrackingQuest and Nav.IsNativeQuestActive(state.guideTrackingQuest) then
+        description = format("guide quest %d is supertracked (observed RestedXP setter, not a manual override)", state.guideTrackingQuest)
+    elseif not state.manualOverride and state.inheritedQuest and Nav.IsNativeQuestActive(state.inheritedQuest) then
+        description = format("startup quest %d is supertracked (origin unknown, not an override)", state.inheritedQuest)
+    end
     if description == state.external then return end
     SetExternal(description)
     if description then
-        RXPW.Debug("Outside navigation change: %s (observed %.3f, no bridge write). Sync resumes at the next RestedXP destination.", description, GetTime())
+        RXPW.Debug("Outside navigation change: %s (observed %.3f, no bridge write).", description, GetTime())
     else
         RXPW.Debug("Waypoint UI is following the RestedXP Waypoint destination again.")
     end
 end
 
 local function OnNavigationEvent()
+    if state.writingCoordinates or state.retiringMarker then return end -- observe final selection after public call
+    -- Ignore synchronous events inside our native setter/clear operation.
+    if not (state.pendingNative and state.pendingNative.writing) then
+        if state.manualOverride then state.manualOverride.idleSince = nil end
+        ObserveManualOverride(GetTime())
+    end
     if state.questTransitionUntil then
         local _, priority = Nav.GetTrackingState()
         local userType = Enum and Enum.SuperTrackingType and Enum.SuperTrackingType.UserWaypoint
@@ -1111,7 +1369,11 @@ local function OnNavigationEvent()
     state.outsideCheckPending = true
     -- Let our own write (and Waypoint UI's delayed validation) settle first.
     local delay = max(OUTSIDE_CHECK_DELAY, state.selfWriteUntil - GetTime())
-    C_Timer.After(delay, CheckOutsideNavigation)
+    local session = state.syncSession
+    C_Timer.After(delay, function()
+        if session ~= state.syncSession then return end
+        CheckOutsideNavigation()
+    end)
 end
 
 --------------------------------------------------------------------------------
@@ -1119,6 +1381,10 @@ end
 --------------------------------------------------------------------------------
 
 local function ResetHandled()
+    state.startupObservation, state.inheritedQuest = false, nil
+    state.guideTrackingQuest = nil
+    state.trackingEvidence, state.lastTrackingLog = nil, nil
+    state.manualOverride = nil
     state.generation = state.generation + 1
     state.pendingNative = nil
     state.nativeHold = nil
@@ -1149,6 +1415,7 @@ function Sync.Start()
 
     -- Treat the next destination as a first activation.
     ResetHandled()
+    state.audioBaseline = true
     RXP.ResetObservation()
 
     state.ticker = C_Timer.NewTicker(POLL_INTERVAL, Tick)
@@ -1157,6 +1424,9 @@ function Sync.Start()
 end
 
 function Sync.Stop()
+    state.startupObservation, state.inheritedQuest = false, nil
+    state.manualOverride = nil
+    state.outsideCheckPending = false
     state.syncSession = state.syncSession + 1
     state.questEvalPending = false
     state.questEvalAt = nil
@@ -1174,6 +1444,7 @@ end
 -- Called after the strategy setting changed: re-evaluate the current
 -- destination now instead of waiting for RestedXP to move.
 function Sync.OnStrategyChanged()
+    state.audioBaseline = true
     wipe(state.nativeFailed)
     state.lastDecisionLog = nil
     if state.ticker then
@@ -1211,6 +1482,8 @@ function Sync.SyncNow()
         return false
     end
 
+    state.startupObservation = false -- explicit sync completes initial acquisition too
+    state.manualOverride = nil
     state.pendingSince = nil
     state.questTransitionUntil, state.questTransitionManual = nil, nil
     NoteStep(target)
@@ -1224,7 +1497,7 @@ function Sync.SyncNow()
     end
 
     PrepareCoordinateTarget(target, decision)
-    local ok, err = ToCoordinates(target, "manual", false)
+    local ok, err = ToCoordinates(target, "manual")
     if not ok then
         RXPW.Print("Sync failed: %s.", err)
         return false
@@ -1242,12 +1515,15 @@ local QUEST_EVENTS = {
 }
 
 local eventFrame = CreateFrame("Frame")
-eventFrame:SetScript("OnEvent", function(_, event)
+eventFrame:SetScript("OnEvent", function(_, event, ...)
     if event == "PLAYER_LEAVING_WORLD" or event == "PLAYER_ENTERING_WORLD" then
+        state.audioBaseline = true
         state.inWorld = event == "PLAYER_ENTERING_WORLD"
         state.syncSession = state.syncSession + 1
         state.questEvalPending = false
         state.questEvalAt = nil
+        state.outsideCheckPending = false
+        if state.manualOverride then state.manualOverride.idleSince = nil end
         state.pendingSince = nil
         state.questTransitionUntil, state.questTransitionManual = nil, nil
         if state.pendingNative then AbandonNative(state.pendingNative, "world changed") end
@@ -1257,7 +1533,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
         wipe(state.nativeFailed)
         RXP.ResetObservation()
     elseif QUEST_EVENTS[event] then
-        OnQuestEvent(event)
+        OnQuestEvent(event, ...)
     else
         OnNavigationEvent()
     end
@@ -1281,7 +1557,13 @@ function Sync.Initialize()
         RegisterOptionalEvent(event)
     end
 
+    if not Nav.ObserveQuestSelections(OnQuestSelection) then
+        RXPW.Debug("Quest setter attribution unavailable; unknown quest selections remain protected.")
+    end
+
     if RXPW.db.autoSync then
         Sync.Start()
+        state.startupObservation = true
+        ObserveManualOverride(GetTime()) -- snapshot existing navigation before later selections
     end
 end

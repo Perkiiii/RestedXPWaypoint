@@ -150,11 +150,13 @@ for _, action in ipairs({ "manual", "raw", "preview", "off", "sync", "world" }) 
   local start, nav, waypoint = #H.operations, H.wui.nav, H.st.waypoint
   if action ~= "sync" then point(H, 80, 58) end
   H.advance(1.5)
-  check(action .. " supersedes deferred automatic work", H.wui.nav == nav and H.st.waypoint == waypoint
+  check(action .. " supersedes deferred automatic work", (H.wui.nav == nav or (action == "raw" and H.wui.nav == nil)) and H.st.waypoint == waypoint
     and operations(H, start) == 0)
   if action == "sync" then check("explicit sync is immediate", H.navAt(60)) end
   if action == "manual" then
     point(H, 90, 59); H.advance(0.6)
+    check("a later real destination keeps the deferred manual pin", H.wui.nav.name == "Chosen while settling")
+    WaypointUIAPI.Navigation.ClearUserNavigation(); H.advance(1.5)
     check("a later real destination resumes after the deferred pin hold", H.navAt(90))
   end
 end

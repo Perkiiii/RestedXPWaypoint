@@ -13,8 +13,9 @@ local quests, st, wui = H.quests, H.st, H.wui
 
 local RXPW = H.load(ADDON_ROOT, { debug = true, strategy = "native-first" })
 local slash = H.slash
-local QUEST_ICON_DONE = "Interface\\AddOns\\WaypointUI\\Art\\Icons\\CompleteQuest"
+local QUEST_ICON_DONE = "Interface\\AddOns\\RestedXPWaypoint\\Art\\Icons\\QuestComplete" -- tint-ready "?" for the quest gold
 local QUEST_ICON_OPEN = "Interface\\AddOns\\WaypointUI\\Art\\Icons\\IncompleteQuest"
+local DEFAULT_ICON = "Interface\\AddOns\\RestedXPWaypoint\\Art\\Icons\\DefaultWaypoint"
 
 local function dalia() return H.header("|Tinterface/worldmap/chatbubble_64grey.blp:20|tTalk to |cRXP_FRIENDLY_Dalia the Collector::251363|r.") end
 local function warn() return H.star("|cRXP_WARN_Choose between Mining, Herbalism, or Skinning|r.") end
@@ -67,8 +68,10 @@ point(wa.approach); advance(2)
 check("A2: native turn-in first", H.mode() == "native" and select(2, H.mode()) == 93552)
 C_SuperTrack.SetSuperTrackedQuestID(2010) -- RestedXP's own .complete handler
 wa.approach.skip = true; point(wa.helper); advance(2)
+check("A2: another supertracked quest retains priority over the helper", st.quest == 2010)
+C_SuperTrack.SetSuperTrackedQuestID(0); advance(2)
 check("A2: quest no longer supertracked -> helper followed with coordinates", H.mode() == "coordinates" and H.navAt(90)
-  and H.lastChat("native continuity not applicable: quest 93552 is no longer supertracked") ~= nil)
+  and st.quest == nil)
 check("A2: helper labelled with its quest", wui.nav.name == "Harvesting Windstones - Ready for turn-in")
 
 ----------------------------------------------------------------------------
@@ -85,7 +88,7 @@ check("C: inconsistent helper -> coordinates (route preserved)", H.mode() == "co
 check("C: rejection explained", H.lastChat("native continuity rejected: the native target is not consistent with the helper waypoint") ~= nil)
 check("C: label uses quest context", wui.nav.name == "Harvesting Windstones - Ready for turn-in", wui.nav.name)
 check("C: quest icon and no coordinate line", wui.nav.iconTexture == QUEST_ICON_DONE and wui.nav.stripCoordinates == true)
-check("C: label and icon logged", H.lastChat("Coordinate waypoint: \"Harvesting Windstones %- Ready for turn%-in\", colour NormalQuest, icon CompleteQuest") ~= nil)
+check("C: label and icon logged", H.lastChat("Coordinate waypoint: \"Harvesting Windstones %- Ready for turn%-in\", colour QuestGold, icon CompleteQuest") ~= nil)
 
 ----------------------------------------------------------------------------
 -- D. Turn-in completes: context cleared, next activity selected
@@ -94,7 +97,7 @@ w2.s34.elements[4].completed = true
 quests[93552] = nil; st.quest = nil
 local s37 = newStep(137, {}, goto_(40, 0, { text = "Walk to the grove" }))
 H.setActiveSteps(s37); H.fire("QUEST_TURNED_IN"); point(s37.elements[1]); advance(2)
-check("D: next activity uses its own instruction", H.mode() == "coordinates" and wui.nav.name == "Walk to the grove" and wui.nav.iconTexture == nil)
+check("D: next activity uses its own instruction", H.mode() == "coordinates" and wui.nav.name == "Walk to the grove" and wui.nav.iconTexture == DEFAULT_ICON)
 check("D: stale context cleared", H.lastChat("Quest context cleared: quest 93552 %(quest turned in or removed%)") ~= nil)
 
 ----------------------------------------------------------------------------
@@ -152,7 +155,7 @@ local orphanStep = newStep(220, { completewith = "Nowhere", sticky = true, hidew
 H.setActiveSteps(orphanStep)
 point(orphan); advance(2)
 check("F: no anchor -> plain fallback label, no quest icon", H.mode() == "coordinates" and wui.nav.name == "Step 220"
-  and wui.nav.iconTexture == nil, wui.nav.name)
+  and wui.nav.iconTexture == DEFAULT_ICON, wui.nav.name)
 
 ----------------------------------------------------------------------------
 -- G. Cave entrance keeps its instruction even when the step belongs to a quest activity
@@ -163,7 +166,7 @@ local caveKill = newStep(231, {}, goto_(60, 0), H.header("Kill cave dwellers"), 
 H.setActiveSteps(caveStep, caveKill)
 point(caveEntrance); advance(2)
 check("G: cave entrance stays coordinates with its instruction", H.mode() == "coordinates" and wui.nav.name == "Enter the cave"
-  and wui.nav.iconTexture == nil and H.lastChat("explicit travel instruction") ~= nil)
+  and wui.nav.iconTexture == DEFAULT_ICON and H.lastChat("explicit travel instruction") ~= nil)
 check("G: route-critical role shown", (function()
   local b = #H.chat; slash("status"); return table.concat(H.chat, "\n", b + 1):find("role: travel instruction | route%-critical: .-yes") ~= nil
 end)())
@@ -200,6 +203,7 @@ check("H: helper of the same quest does not override the manual waypoint", wui.n
 check("H: no quest information forced onto the manual waypoint", wui.nav.iconTexture == nil and wui.nav.flags == nil)
 w3.helper.skip = true; H.setActiveSteps(w3.s36); point(w3.final); advance(2)
 check("H: same native id at step 36 writes nothing", wui.nav.name == "Repair Vendor" and st.setQuestCalls == calls)
+WaypointUIAPI.Navigation.ClearUserNavigation(); advance(2)
 
 ----------------------------------------------------------------------------
 -- I. Rapid transitions: 34 -> 35 -> 36 faster than the settle time, plus an interrupted native start
@@ -236,8 +240,8 @@ check("coordinates: same quest context label and icon", H.mode() == "coordinates
 -- Unverified Waypoint UI version: no quest icon (label still improved)
 H.versions.WaypointUI = "2.0.0"
 slash("mode native-first"); advance(2)
-check("unknown Waypoint UI version: quest label without icon", wui.nav.name == "Harvesting Windstones - Ready for turn-in"
-  and wui.nav.iconTexture == nil, wui.nav.name)
+check("unknown Waypoint UI version: quest label, the bridge's default icon", wui.nav.name == "Harvesting Windstones - Ready for turn-in"
+  and wui.nav.iconTexture == DEFAULT_ICON and wui.nav.r == nil, wui.nav.name)
 H.versions.WaypointUI = "1.7.3"
 
 H.finish()

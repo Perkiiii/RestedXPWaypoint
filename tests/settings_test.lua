@@ -355,12 +355,14 @@ do
     and P.previewStatus.frame.text:GetText() == "No preview is shown." and not c.previewStop:IsEnabled())
   check("preview list offers all 14 markers with their icons", #c.previewIconDropdown.list.rows == 14
     and c.previewIconDropdown.options[1].label == "Available Quest"
-    and c.previewIconDropdown.options[14].label == "Default Navigation")
+    and c.previewIconDropdown.options[14].label == "Default Waypoint"
+    and c.previewIconDropdown.options[14].icon == OWN_ICONS .. "DefaultWaypoint" and c.previewIconDropdown.options[14].tint == nil)
   choose(c.previewIconDropdown, "repair")
   check("selected icon shown beside the dropdown", c.previewIcon.swatch:GetTexture() == OWN_ICONS .. "Repair"
     and c.previewIcon.swatch:IsShown() and c.previewIconDropdown.text:GetText() == "Repair")
   choose(c.previewIconDropdown, "default")
-  check("default navigation has no icon swatch", not c.previewIcon.swatch:IsShown())
+  check("default waypoint: its icon in the swatch, uncoloured", c.previewIcon.swatch:IsShown()
+    and c.previewIcon.swatch:GetTexture() == OWN_ICONS .. "DefaultWaypoint")
   local writes = H.wui.writes
   choose(c.previewIconDropdown, "repair"); c.previewDistance.buttons[2]:Click()
   check("selecting icon and distance writes nothing", H.wui.writes == writes and c.previewDistance.value == "far")

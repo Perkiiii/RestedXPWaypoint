@@ -15,6 +15,9 @@ C_QuestInfoSystem = { GetQuestClassification = function(q) return classification
 local RXPW = H.load(ADDON_ROOT, { debug = true, strategy = "native-first" })
 local slash = H.slash
 local ICON = "Interface\\AddOns\\WaypointUI\\Art\\Icons\\"
+local DEFAULT_ICON = "Interface\\AddOns\\RestedXPWaypoint\\Art\\Icons\\DefaultWaypoint"
+local GOLD_OPEN = "Interface\\AddOns\\RestedXPWaypoint\\Art\\Icons\\QuestAvailable" -- tint-ready "!" for the quest gold
+local GOLD_DONE = "Interface\\AddOns\\RestedXPWaypoint\\Art\\Icons\\QuestComplete"  -- tint-ready "?"
 
 local function crystals() return H.header("|TInterface/cursor/crosshair/interact.blp:20|tClick on the |cRXP_PICK_Crystals|r") end
 
@@ -50,10 +53,10 @@ quests[93552].objectives[1] = { type = "object", finished = true, numFulfilled =
 quests[93552].ready = true
 writes = wui.writes
 H.fire("QUEST_LOG_UPDATE"); advance(2)
-check("quest ready -> complete-quest icon via a silent same-coordinate update", wui.nav.iconTexture == ICON .. "CompleteQuest"
+check("quest ready -> complete-quest icon via a silent same-coordinate update", wui.nav.iconTexture == GOLD_DONE
   and wui.writes == writes + 1 and H.navAt(25) and wui.nav.name == "Click on the Crystals")
 check("icon-only refresh is logged as a same-destination update", H.lastChat("Label/icon changed") ~= nil)
-check("ready quest uses the normal quest colour", tintIs(255, 255, 156))
+check("ready quest uses the quest gold #FFD100", tintIs(255, 209, 0))
 
 ----------------------------------------------------------------------------
 -- 2. Accept step that stays on coordinates: "!" (available) icon
@@ -64,11 +67,11 @@ local acceptStep = newStep(40, {}, accept, H.header("Talk to |cRXP_FRIENDLY_Dali
   H.accept(93600, "Harvesting More"), { tag = "target", textOnly = true })
 H.setActiveSteps(acceptStep)
 point(accept); advance(2)
-check("accept step keeps Waypoint UI's 'Other' colour (no explicit colour)", wui.nav.r == nil and wui.nav.g == nil and wui.nav.b == nil)
+check("accept step uses the quest gold #FFD100 (not Waypoint UI's pale 'Other')", tintIs(255, 209, 0))
 -- v0.5.6: the real instruction wins over the ">>" heading (as it always did in
 -- game, where RestedXP marks headings completed when it draws them).
 check("accept step: coordinates with the available-quest icon", H.mode() == "coordinates" and wui.nav.name == "Accept Harvesting More"
-  and wui.nav.iconTexture == ICON .. "AvailableQuest", wui.nav.iconTexture)
+  and wui.nav.iconTexture == GOLD_OPEN, wui.nav.iconTexture)
 
 -- Quest accepted while standing there (RestedXP has not moved on yet): incomplete icon
 quests[93600] = { title = "Harvesting More", ready = false, poi = 900, objectives = { { type = "object", finished = false, numFulfilled = 0, numRequired = 5 } } }
@@ -103,7 +106,8 @@ local travel = goto_(65, 0, { text = "Run to the bridge" })
 local travelStep = newStep(60, { completewith = "next", sticky = true }, travel)
 H.setActiveSteps(travelStep)
 point(travel); advance(2)
-check("travel step: default icon and colour", wui.nav.name == "Run to the bridge" and wui.nav.iconTexture == nil and wui.nav.r == nil)
+check("travel step: the bridge's default icon, no r/g/b", wui.nav.name == "Run to the bridge"
+  and wui.nav.iconTexture == DEFAULT_ICON and wui.nav.r == nil and wui.nav.g == nil and wui.nav.b == nil, wui.nav.iconTexture)
 
 local vendor = goto_(70, 0)
 local vendorStep = newStep(61, {}, vendor, H.header("Talk to Uualia"), { tag = "vendor", text = "Vendor trash" }, H.complete(93552, 1))
@@ -116,7 +120,7 @@ local unknown = goto_(75, 0)
 local unknownStep = newStep(62, {}, unknown, H.complete(99999, 1)) -- quest not in the log
 H.setActiveSteps(unknownStep)
 point(unknown); advance(2)
-check("objective of a quest not in the log: default icon", wui.nav.iconTexture == nil, wui.nav.iconTexture)
+check("objective of a quest not in the log: default icon", wui.nav.iconTexture == DEFAULT_ICON and wui.nav.r == nil, wui.nav.iconTexture)
 
 ----------------------------------------------------------------------------
 -- 5. Native tracking is unchanged; presentation is the same in every strategy (v0.5.6)
@@ -133,24 +137,24 @@ local before = #H.chat
 slash("status")
 local text = table.concat(H.chat, "\n", before + 1)
 check("status shows the coordinate marker icon", text:find("Marker icon: quest 93552 Complete | CompleteQuest", 1, true) ~= nil
-  and text:find("Marker texture: " .. ICON .. "CompleteQuest", 1, true) ~= nil
+  and text:find("Marker texture: " .. GOLD_DONE, 1, true) ~= nil
   and text:find("set by RestedXP Waypoint, custom icon") ~= nil, text)
 
 local nativeFirstNav = { name = wui.nav.name, x = wui.nav.x, y = wui.nav.y }
 slash("mode hybrid"); advance(2)
-check("hybrid: same quest icon and colour", H.mode() == "coordinates" and wui.nav.iconTexture == ICON .. "CompleteQuest"
+check("hybrid: same quest icon and colour", H.mode() == "coordinates" and wui.nav.iconTexture == GOLD_DONE
   and wui.nav.r ~= nil, wui.nav.iconTexture)
 slash("mode coordinates"); advance(2)
-check("coordinates: same quest icon", H.mode() == "coordinates" and wui.nav.iconTexture == ICON .. "CompleteQuest", wui.nav.iconTexture)
+check("coordinates: same quest icon", H.mode() == "coordinates" and wui.nav.iconTexture == GOLD_DONE, wui.nav.iconTexture)
 check("strategies do not move the waypoint or change its label", wui.nav.name == nativeFirstNav.name
   and wui.nav.x == nativeFirstNav.x and wui.nav.y == nativeFirstNav.y)
 slash("mode native-first"); advance(2)
-check("back to native-first: icon returns", wui.nav.iconTexture == ICON .. "CompleteQuest")
+check("back to native-first: icon returns", wui.nav.iconTexture == GOLD_DONE)
 
--- Unverified Waypoint UI version: default icon
+-- Unverified Waypoint UI version: no quest icon file, so the bridge's default icon
 H.versions.WaypointUI = "1.8.0"
 point(r[3]); advance(2)
-check("unverified Waypoint UI version: default icon and colour", wui.nav.iconTexture == nil and wui.nav.r == nil)
+check("unverified Waypoint UI version: the bridge's default icon, no r/g/b", wui.nav.iconTexture == DEFAULT_ICON and wui.nav.r == nil)
 H.versions.WaypointUI = "1.7.3"
 
 H.finish()

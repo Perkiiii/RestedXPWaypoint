@@ -12,7 +12,14 @@ into the same layout and format.
 Usage:
     python tools/build_icons.py <source-folder> [<output-folder>]
 
-Source files are matched by name (see ICONS); any format Pillow reads works.
+Source files are matched by name (see ICONS); any format Pillow reads works,
+plus BLP2 encoding 3 (read_blp). Icons without a source in the folder are
+skipped (and listed), so
+    python tools/build_icons.py tools/icon_sources
+rebuilds only the DefaultWaypoint icon, whose source is kept in the repository, and
+    python tools/build_icons.py "<WoW>/Interface/AddOns/WaypointUI/Art/Icons"
+rebuilds only the gold quest icons (QuestAvailable, QuestComplete): tint-ready
+copies of Waypoint UI's normal "!" and "?" (see ICON_OPTIONS "as_glyph").
 Output defaults to Art/Icons next to this script's parent folder.
 """
 import os
@@ -49,14 +56,29 @@ ICONS = {
     "StableMaster": ["stable", "stable master", "stablemaster"],
     "Bags": ["bankbags", "bank bags", "bags", "bank", "vendor"],  # general vendor + banker
     "Grind": ["grind"],
+    # Drawn by tools/draw_default_waypoint.py into tools/icon_sources.
+    "DefaultWaypoint": ["defaultwaypoint", "default waypoint"],
+    # Waypoint UI 1.7.x's own normal quest glyphs (Art/Icons/AvailableQuest.blp,
+    # CompleteQuest.blp), made tint-ready for the bridge's quest gold.
+    "QuestAvailable": ["availablequest"],
+    "QuestComplete": ["completequest"],
 }
 
 # Per-icon tweaks. strip_glow: remove the light outer halo some minimap icons
 # have (e.g. the crossed swords); brighten: lift a dim glyph that relied on
 # that halo for contrast; peel: override PEEL (the swords' outline is part of
-# the glyph, so it is kept).
+# the glyph, so it is kept); tint_ready: override TINT_READY; glyph: override
+# GLYPH (a solid silhouette reads heavier than a detailed glyph, so it is drawn
+# smaller); dy: vertical shift in pixels (optical centring, negative = up).
+# DefaultWaypoint's drawn source has no baked-in black rim to peel.
+# as_glyph: the source already is a finished 64x64 Waypoint UI glyph (layout,
+# outline and alpha); only the tint-ready brightness conversion is applied, so
+# shape, border, size and transparency stay pixel-identical.
 ICON_OPTIONS = {
     "Grind": {"strip_glow": True, "brighten": 1.8, "peel": 0},
+    "DefaultWaypoint": {"peel": 0, "glyph": 40, "dy": -1},
+    "QuestAvailable": {"as_glyph": True},
+    "QuestComplete": {"as_glyph": True},
 }
 
 
@@ -136,6 +158,9 @@ def make_glyph(source, options=None):
     """Return a 64x64 RGBA glyph in Waypoint UI's style."""
     options = options or {}
     im = source.convert("RGBA")
+    if options.get("as_glyph"):
+        assert im.size == (CANVAS, CANVAS), "as_glyph sources must already be %dx%d" % (CANVAS, CANVAS)
+        return tint_ready(im) if options.get("tint_ready", TINT_READY) else im
     if options.get("strip_glow"):
         im = strip_glow(im)
     if options.get("brighten"):
@@ -144,12 +169,12 @@ def make_glyph(source, options=None):
     bbox = im.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
     if bbox:
         im = im.crop(bbox)
-    scale = GLYPH / max(im.size)
+    scale = options.get("glyph", GLYPH) / max(im.size)
     size = (max(1, round(im.size[0] * scale)), max(1, round(im.size[1] * scale)))
     im = im.resize(size, Image.LANCZOS)
 
     glyph = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-    glyph.alpha_composite(im, ((CANVAS - size[0]) // 2, (CANVAS - size[1]) // 2))
+    glyph.alpha_composite(im, ((CANVAS - size[0]) // 2, (CANVAS - size[1]) // 2 + options.get("dy", 0)))
 
     if OUTLINE <= 0 or OUTLINE_ALPHA <= 0:
         # (MaxFilter(1) crashes Pillow, so skip the outline entirely)
@@ -210,7 +235,8 @@ def main():
         if not source:
             missing.append(name)
             continue
-        glyph = make_glyph(Image.open(source), ICON_OPTIONS.get(name))
+        image = read_blp(source) if source.lower().endswith(".blp") else Image.open(source)
+        glyph = make_glyph(image, ICON_OPTIONS.get(name))
         target = os.path.join(out_dir, name + ".blp")
         write_blp(glyph, target)
         assert read_blp(target).tobytes() == glyph.tobytes()

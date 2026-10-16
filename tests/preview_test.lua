@@ -44,28 +44,28 @@ check("quest preview: incomplete icon with the quest colour", wui.nav.iconTextur
 check("placed ahead when facing west (smaller x)", wui.nav.x < 0.5 and math.abs(wui.nav.y - 0.5) < 1e-6)
 
 slash("preview next")
-check("next: complete quest icon", wui.nav.iconTexture == WUIICON .. "CompleteQuest")
+check("next: complete quest icon", wui.nav.iconTexture == OWN .. "QuestComplete")
 
 slash("preview all")
-check("cycle starts at the first icon", wui.nav.iconTexture == WUIICON .. "AvailableQuest")
+check("cycle starts at the first icon", wui.nav.iconTexture == OWN .. "QuestAvailable")
 local seen = { [wui.nav.iconTexture or "none"] = true }
 for i = 1, 14 do advance(4); seen[wui.nav.iconTexture or "none"] = true end
 check("cycle shows every service icon", seen[OWN .. "Grind"] and seen[OWN .. "Bags"] and seen[OWN .. "Innkeeper"]
-  and seen[OWN .. "StableMaster"] and seen[OWN .. "Repair"] and seen["none"])
+  and seen[OWN .. "StableMaster"] and seen[OWN .. "Repair"] and seen[OWN .. "DefaultWaypoint"] and not seen["none"])
 check("cycle ends", H.lastChat("Preview cycle finished") ~= nil)
 
 -- Close vs far: far is 300% further away (4x the close distance)
 facing = 0
 slash("preview all close")
 local closeY = wui.nav.y
-check("preview all close: first icon, close by", wui.nav.iconTexture == WUIICON .. "AvailableQuest" and math.abs(closeY - (0.5 - 0.008)) < 1e-6, closeY)
+check("preview all close: first icon, close by", wui.nav.iconTexture == OWN .. "QuestAvailable" and math.abs(closeY - (0.5 - 0.008)) < 1e-6, closeY)
 slash("preview all far")
 local farY = wui.nav.y
-check("preview all far: first icon, 4x as far", wui.nav.iconTexture == WUIICON .. "AvailableQuest" and math.abs(farY - (0.5 - 0.032)) < 1e-6, farY)
+check("preview all far: first icon, 4x as far", wui.nav.iconTexture == OWN .. "QuestAvailable" and math.abs(farY - (0.5 - 0.032)) < 1e-6, farY)
 check("far cycle keeps the far distance", (function() advance(4); return math.abs(wui.nav.y - (0.5 - 0.032)) < 1e-6 and wui.nav.iconTexture == WUIICON .. "IncompleteQuest" end)())
 check("cycle messages show the distance", H.lastChat("Preview 2/14 %(far%): Quest in progress") ~= nil)
 slash("preview next")
-check("next keeps the last distance (far)", math.abs(wui.nav.y - (0.5 - 0.032)) < 1e-6 and wui.nav.iconTexture == WUIICON .. "CompleteQuest")
+check("next keeps the last distance (far)", math.abs(wui.nav.y - (0.5 - 0.032)) < 1e-6 and wui.nav.iconTexture == OWN .. "QuestComplete")
 slash("preview grind close")
 check("single icon close", wui.nav.iconTexture:find("Grind$") and math.abs(wui.nav.y - (0.5 - 0.008)) < 1e-6)
 slash("preview far grind")

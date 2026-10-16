@@ -220,10 +220,14 @@ local function PrintContext(decision, target)
         category = format("quest %d %s", p.questID, tostring(p.status))
     end
     RXPW.PrintLine("Marker icon: %s | %s | colour: %s", category,
-        iconName and format("%s (%s)", iconName, tostring(p.source)) or "Waypoint UI default",
+        iconName and (p and format("%s (%s)", iconName, tostring(p.source)) or iconName) or "Waypoint UI default",
         target.tint and tostring(tintName) or "Waypoint UI default")
     RXPW.PrintLine("Marker texture: %s", target.iconTexture or "Waypoint UI default")
     if p and p.serviceSource then RXPW.PrintLine("Service source: %s", p.serviceSource) end
+    if p then
+        RXPW.PrintLine("Icon reason: %s", p.iconReason or (p.service and "service directive" or "quest instruction"))
+        if p.rejectedService then RXPW.Debug("Icon service rejected: %s", p.rejectedService) end
+    end
 end
 
 -- Candidate lines for a shared-circuit (multi-quest) decision.
@@ -304,6 +308,14 @@ function RXPW.PrintStatus()
     else
         RXPW.PrintLine("Waypoint UI destination: none")
     end
+    if nav and nav.flags == RXPW.OWNER_FLAG then
+        RXPW.PrintLine("Stored bridge marker: %s (active navigation ownership: %s)",
+            RXPW.WUI.IsOwnedNavigationTracked() and "actively followed" or "retained, inactive", YesNo(sync.bridgeActive))
+    end
+    if sync.markerCleanup then RXPW.PrintLine("Marker cleanup: %s", sync.markerCleanup) end
+    if sync.trackingEvidence then
+        RXPW.PrintLine("Last quest setter evidence: quest %d, %s", sync.trackingEvidence.questID, sync.trackingEvidence.source)
+    end
     if target and not reason and nav and nav.flags == RXPW.OWNER_FLAG and target.label then
         local same = RXPW.WUI.IsShowingTarget(target)
         RXPW.PrintLine("Objective label: RestedXP \"%s\" | expected \"%s\" | displayed \"%s\" | stale: %s",
@@ -340,7 +352,17 @@ function RXPW.PrintStatus()
         RXPW.PrintLine("Last result: %s%s", sync.lastResult, Ago(sync.lastResultTime))
     end
     if sync.external then
-        RXPW.PrintLine("Outside change: %s (sync resumes at the next RestedXP destination)", sync.external)
+        RXPW.PrintLine("Outside change: %s", sync.external)
+    end
+    if sync.overrideActive then
+        RXPW.PrintLine("Automatic sync: %s", sync.resumePending and "waiting for the one-second resume delay"
+            or "paused for external navigation; resumes one second after it ends")
+    end
+    if sync.guideTrackingQuest then
+        RXPW.PrintLine("Guide quest tracking: quest %d (observed RestedXP setter)", sync.guideTrackingQuest)
+    end
+    if sync.inheritedQuest then
+        RXPW.PrintLine("Startup quest: quest %d (origin unknown; does not suspend sync)", sync.inheritedQuest)
     end
 end
 

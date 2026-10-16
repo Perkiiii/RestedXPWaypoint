@@ -73,7 +73,7 @@ local PREVIEW_LABELS = {
     available = "Available Quest", incomplete = "Incomplete Quest", complete = "Complete Quest",
     flightmaster = "Flight Master", classtrainer = "Class Trainer", professiontrainer = "Profession Trainer",
     food = "Food & Drink", repair = "Repair", innkeeper = "Innkeeper", stable = "Stable Master",
-    vendor = "Vendor", banker = "Banker", grind = "Grind", default = "Default Navigation",
+    vendor = "Vendor", banker = "Banker", grind = "Grind", default = "Default Waypoint",
 }
 
 local NATIVE_NOTE = "Applies to the custom waypoints RestedXP Waypoint creates. While native quest tracking is "

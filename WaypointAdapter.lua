@@ -15,6 +15,8 @@ local WUI_ADDON = "WaypointUI"
 -- (normalised, then scaled back) against a RestedXP target.
 local MATCH_TOLERANCE = 0.001
 
+local RequestsRecolor -- defined with the default icon below
+
 local format = string.format
 local type = type
 local tostring = tostring
@@ -112,6 +114,7 @@ function WUI.HasTargetLabel(target)
         and nav.iconType == (target.iconTexture and "TEXTURE" or nil)
         and nav.r == (target.tint and target.tint.r) and nav.g == (target.tint and target.tint.g)
         and nav.b == (target.tint and target.tint.b)
+        and nav.requestRecolor == RequestsRecolor(target.iconTexture)
 end
 
 -- Quest icon for a custom waypoint that carries quest context (v0.5.4).
@@ -121,8 +124,8 @@ end
 -- quest icons are files it ships in Art\Icons (CompleteQuest /
 -- IncompleteQuest for normal quests, see Waypoint_ContextIcon.lua). Those file
 -- names are an implementation detail, so they are only used with the Waypoint
--- UI version they were verified against (1.7.x); otherwise no icon is set and
--- Waypoint UI keeps its default custom-waypoint icon.
+-- UI version they were verified against (1.7.x); otherwise no quest icon is
+-- set and the bridge's default icon is shown (WUI.ResolveAppearance).
 local VERIFIED_ICON_VERSION = "^1%.7%."
 local QUEST_ICON_PATH = "Interface\\AddOns\\WaypointUI\\Art\\Icons\\"
 
@@ -131,7 +134,8 @@ local QUEST_ICON_PATH = "Interface\\AddOns\\WaypointUI\\Art\\Icons\\"
 -- see Nav.GetQuestIconType. Mirrors Waypoint_ContextIcon's "<State><Type>Quest".
 local ICON_STATES = { Available = true, Incomplete = true, Complete = true }
 
--- Waypoint UI's default marker colours (Preload.lua Enum.ColorRGB01, 1.7.x).
+-- Waypoint UI's default marker colours (Preload.lua Enum.ColorRGB01, 1.7.x);
+-- normal available/ready quests use the quest gold instead (QUEST_GOLD below).
 -- A custom navigation with r/g/b is tinted with that colour (frame, text,
 -- beam) instead of the "Other" gold (Waypoint.GetTintColorInfo). Waypoint UI
 -- then also desaturates and tints the icon (recolor is forced on for custom
@@ -183,6 +187,25 @@ local function HexColor(hex)
     }
 end
 
+-- Quest gold: the classic WoW quest-marker yellow (NORMAL_FONT_COLOR, #FFD100)
+-- for normal available ("!") and ready ("?") quests, instead of Waypoint UI's
+-- pale defaults ("Other" #FFF1B4 / NormalQuest #FFFF9C). The colour forces
+-- Waypoint UI to desaturate and tint the icon, which turns its own full-colour
+-- glyphs a dull mustard, so these two use the bridge's tint-ready copies of
+-- those glyphs (Art/Icons/QuestAvailable, QuestComplete: same alpha, brightness
+-- only, tools/build_icons.py) and come out full gold, like the service icons.
+-- With customColors off no colour is sent, so Waypoint UI's original icons
+-- are used and keep their own colours. Quest types (campaign, repeatable, ...)
+-- and incomplete quests keep their existing icons and colours.
+local QUEST_GOLD = "FFD100"
+local QUEST_GOLD_ICONS = { Available = "QuestAvailable", Complete = "QuestComplete" }
+
+local function GoldQuestIcon(status, iconType)
+    if RXPW.db and RXPW.db.customColors == false then return nil end
+    if iconType ~= nil and iconType ~= "" then return nil end
+    return QUEST_GOLD_ICONS[status]
+end
+
 -- Marker colour (r/g/b, 0-1) for a service, or nil.
 function WUI.GetServiceTint(service)
     local palette = SERVICE_PALETTE[service]
@@ -190,8 +213,8 @@ function WUI.GetServiceTint(service)
 end
 
 -- Marker colour and its name for a Nav.GetPresentation result: the service
--- palette's primary, or Waypoint UI's quest colour (GetQuestTint). nil = keep
--- Waypoint UI's default ("Other") colour.
+-- palette's primary, the quest gold, or Waypoint UI's quest colour
+-- (GetQuestTint). nil = keep Waypoint UI's default ("Other") colour.
 function WUI.GetPresentationTint(presentation)
     if not presentation then return nil end
     if presentation.service then
@@ -199,6 +222,7 @@ function WUI.GetPresentationTint(presentation)
         if palette then return HexColor(palette.primary), palette.name end
         return nil
     end
+    if GoldQuestIcon(presentation.status, presentation.iconType) then return HexColor(QUEST_GOLD), "QuestGold" end
     local tint = presentation.tintKey and WUI.GetQuestTint(presentation.tintKey)
     return tint, tint and presentation.tintKey or nil
 end
@@ -215,10 +239,33 @@ local SERVICE_ICONS = {
     Vendor = "Bags", Banker = "Bags", Grind = "Grind",
 }
 
+local OWN_ICON_PATH = "Interface\\AddOns\\" .. addonName .. "\\Art\\Icons\\"
+
 function WUI.GetServiceIcon(service)
     local file = SERVICE_ICONS[service]
     if not file then return nil end
-    return "Interface\\AddOns\\" .. addonName .. "\\Art\\Icons\\" .. file
+    return OWN_ICON_PATH .. file
+end
+
+-- The bridge's own default marker icon (the logo's arrow), for a RestedXP
+-- coordinate waypoint without a quest or service icon. Stored brightness-only
+-- like the service icons, and sent without r/g/b but with the documented
+-- requestRecolor option: Waypoint UI then desaturates it and colours it with
+-- its own custom-waypoint colour ("Other", or the player's choice in Waypoint
+-- UI), the same colour as the marker frame, text and beam
+-- (Waypoint.GetTintColorInfo, MapPinFrame GetTintColor), exactly as it does
+-- for its own generic navigation icon.
+local DEFAULT_ICON = "DefaultWaypoint"
+
+function WUI.GetDefaultIcon()
+    return OWN_ICON_PATH .. DEFAULT_ICON
+end
+
+-- requestRecolor for an icon: only the default icon asks for it. (Coloured
+-- icons are recoloured anyway; quest icons without a colour keep theirs.)
+function RequestsRecolor(iconTexture)
+    if iconTexture ~= nil and iconTexture == WUI.GetDefaultIcon() then return true end
+    return nil
 end
 
 -- Icon path and display name for a Nav.GetPresentation result (quest or service).
@@ -234,6 +281,11 @@ end
 
 -- What the bridge supplies for a presentation, after the appearance settings
 -- (v0.6.0). Returns iconTexture, iconName, tint, tintName (any may be nil).
+--   no quest or service icon (travel and other steps, or a quest icon this
+--     Waypoint UI version cannot show): the bridge's DefaultWaypoint icon, no
+--     r/g/b; SetNavigation adds requestRecolor, so Waypoint UI tints it with
+--     the marker's own colour. No setting turns it off; the settings below
+--     only concern recognised quest and service destinations.
 --   questIcons / serviceIcons off: no iconTexture, so Waypoint UI draws its own
 --     generic custom-navigation icon (Art\Icons\Navigation, recoloured with
 --     the marker colour; Waypoint_DataProvider.GetContextIconTextureForOtherPinType).
@@ -243,10 +295,9 @@ end
 -- The colour still belongs only to recognised destinations that have a
 -- shippable icon (as since v0.5.5), whether or not that icon is shown.
 function WUI.ResolveAppearance(presentation)
-    if not presentation then return nil end
     local db = RXPW.db
     local icon, iconName = WUI.GetPresentationIcon(presentation)
-    if not icon then return nil end
+    if not icon then return WUI.GetDefaultIcon(), DEFAULT_ICON, nil, nil end
     local tint, tintName
     if db.customColors ~= false then
         tint, tintName = WUI.GetPresentationTint(presentation)
@@ -261,6 +312,8 @@ function WUI.GetQuestIcon(status, iconType)
     local version = RXPW.GetVersion(WUI_ADDON)
     if type(version) ~= "string" or not version:find(VERIFIED_ICON_VERSION) then return nil end
     if not ICON_STATES[status] then return nil end
+    local gold = GoldQuestIcon(status, iconType)
+    if gold then return OWN_ICON_PATH .. gold end
     return QUEST_ICON_PATH .. status .. (type(iconType) == "string" and iconType or "") .. "Quest"
 end
 
@@ -307,11 +360,37 @@ function WUI.ClearNavigationWithFlag(flag)
     return ok
 end
 
+-- Retire only an inactive owned session. Preserve the native waypoint even
+-- when it happens to share coordinates: historical marker ownership is not
+-- permission to delete a raw Blizzard pin. suppressAdvance also prevents WUI's
+-- path destination-clear callback (verified in 1.7.3), not just queue advance.
+function WUI.RetireInactiveNavigation(expected)
+    local api = GetNavigationAPI()
+    if not api or type(api.ClearUserNavigation) ~= "function" then return false, "cleanup API unavailable" end
+    if type(api.IsUserNavigationFlagged) ~= "function" then return false, "ownership API unavailable" end
+    if not WUI.HasNavigationWithFlag(RXPW.OWNER_FLAG) then return false, "marker ownership changed" end
+    if WUI.GetNavigation() ~= expected then return false, "stored marker changed" end
+    if WUI.IsOwnedNavigationTracked() then return false, "bridge marker is actively followed" end
+    local ok = pcall(api.ClearUserNavigation, true, true)
+    if not ok then return false, "cleanup API failed" end
+    if WUI.GetNavigation() == expected then return false, "marker retained by Waypoint UI" end
+    return true, "stored marker removed; native waypoint and external tracking preserved"
+end
+
 -- Name of a tracked navigation that the bridge did not create, or nil.
 function WUI.GetForeignNavigationName()
     local nav, tracked = GetTrackedNavigation()
     if nav and tracked and nav.flags ~= RXPW.OWNER_FLAG then
         return tostring(nav.name or "unnamed waypoint")
+    end
+    -- A raw Blizzard pin can replace WUI's native waypoint while its stored
+    -- session still belongs to us. Ownership of that stale session is not
+    -- ownership of the currently tracked pin. Path steps above remain owned.
+    local _, priority = RXPW.Nav.GetTrackingState()
+    local userType = Enum and Enum.SuperTrackingType and Enum.SuperTrackingType.UserWaypoint
+    if userType ~= nil and priority == userType and not (nav and tracked) then
+        local _, waypoint = WUI.GetNavigationIdentity()
+        if waypoint then return "user waypoint" end
     end
     return nil
 end
@@ -350,6 +429,7 @@ end
 -- and with pathfinding enabled the path is rebuilt and its step waypoint
 -- recreated. There is no public rename API, so Sync limits how often a
 -- same-destination presentation update is sent (PRESENTATION_MIN_INTERVAL).
+-- suppressAudio controls only MapPin's new-navigation sound, not those intros.
 -- stripCoordinates (documented option) hides the coordinate line under the name.
 function WUI.SetNavigation(target, suppressAudio)
     local api = GetNavigationAPI()
@@ -367,6 +447,7 @@ function WUI.SetNavigation(target, suppressAudio)
         stripCoordinates = target.stripCoordinates and true or false,
         iconTexture = target.iconTexture,
         iconType = target.iconTexture and "TEXTURE" or nil,
+        requestRecolor = RequestsRecolor(target.iconTexture),
         r = target.tint and target.tint.r or nil,
         g = target.tint and target.tint.g or nil,
         b = target.tint and target.tint.b or nil,

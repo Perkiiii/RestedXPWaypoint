@@ -119,6 +119,8 @@ text = statusText()
 check("manual override: status does not call it stale", text:find("Objective label:", 1, true) == nil)
 -- RestedXP moves on: the bridge resumes
 r[2].skip = true; point(r[3]); advance(2)
+check("next RestedXP point keeps the active manual waypoint", wui.nav.name == "My own pin")
+WaypointUIAPI.Navigation.ClearUserNavigation(); advance(2)
 check("next RestedXP point: bridge resumes with live label and icon", H.navAt(30) and wui.nav.name == "9/15 Windstone Cluster"
   and wui.nav.iconTexture == ICON .. "IncompleteQuest", wui.nav.name)
 
@@ -128,7 +130,7 @@ quests[93552].ready = true; quests[93552].objectives[1].finished = true
 comp.text = "15/15 Windstone Cluster"
 H.fire("QUEST_LOG_UPDATE"); advance(2)
 check("quest ready: label shows the final progress", wui.nav.name == "15/15 Windstone Cluster" and H.navAt(30), wui.nav.name)
-check("quest ready: complete quest icon and normal quest colour", wui.nav.iconTexture == ICON .. "CompleteQuest" and tintIs(255, 255, 156),
+check("quest ready: complete quest icon and the quest gold", wui.nav.iconTexture == OWN .. "QuestComplete" and tintIs(255, 209, 0),
   wui.nav.iconTexture)
 
 ----------------------------------------------------------------------------
@@ -137,7 +139,8 @@ local travel = goto_(65, 0, { text = "Run to the bridge" })
 local travelStep = newStep(60, { completewith = "next", sticky = true }, travel)
 H.setActiveSteps(travelStep)
 point(travel); advance(2)
-check("travel waypoint: default icon and colour", wui.nav.name == "Run to the bridge" and wui.nav.iconTexture == nil and wui.nav.r == nil)
+check("travel waypoint: the bridge's default icon, no r/g/b", wui.nav.name == "Run to the bridge"
+  and wui.nav.iconTexture == OWN .. "DefaultWaypoint" and wui.nav.r == nil, wui.nav.iconTexture)
 
 local fp = goto_(70, 0)
 local fpStep = newStep(61, {}, fp, H.header("Talk to |cRXP_FRIENDLY_Karos|r"), { tag = "fp", text = "Get the Sepulcher flight path" },

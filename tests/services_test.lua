@@ -53,8 +53,9 @@ check("profession trainer marker: Artisan Copper #C57A55", colourIs("C57A55"), w
 
 -- Learning from a book is not a trainer: .goto / .itemcount / .train 2575 >>Use Mining for Dummies / .use
 visit(4, 26, cond("itemcount"), { tag = "train", id = 2575, text = "Use |T4625105:0|t[Mining for Dummies]" }, cond("use"))
-check("book step (.train + .use): default icon", wui.nav.iconTexture == nil, wui.nav.iconTexture)
-check("no icon: no colour (Waypoint UI default)", wui.nav.r == nil)
+check("book step (.train + .use): default icon", wui.nav.iconTexture == OWN .. "DefaultWaypoint", wui.nav.iconTexture)
+check("default icon: no r/g/b; Waypoint UI tints it with the marker colour", wui.nav.r == nil and wui.nav.g == nil
+  and wui.nav.b == nil and wui.nav.requestRecolor == true)
 
 -- Food and drink: .goto / >>Talk to Uualia / >>Buy Refreshing Spring Water / .vendor 251537 >>Vendor trash / *note / .collect 159,20 / .target
 visit(5, 28, talk("Uualia Suncrest::251537"), H.header("|cRXP_BUY_Buy|r |T132794:0|t[Refreshing Spring Water] |cRXP_BUY_from her|r"),
@@ -85,7 +86,7 @@ quests[6321] = { title = "Supplying the Sepulcher", ready = true, poi = 900 }
 visit(10, 38, talk("Karos"), H.turnin(6321, "Supplying the Sepulcher"), H.accept(6323, "Ride to the Undercity"),
   { tag = "fp", text = "Get the Sepulcher flight path" })
 check("quest first: quest icon, not the flight master icon", wui.nav.iconTexture ~= OWN .. "FlightMaster"
-  and wui.nav.iconTexture ~= nil and wui.nav.iconTexture:find("Quest$") ~= nil, wui.nav.iconTexture)
+  and wui.nav.iconTexture ~= nil and wui.nav.iconTexture:find("Quest") ~= nil, wui.nav.iconTexture)
 
 -- Turn-in finished, the flight path remains: flight master icon (silent update at the same spot)
 quests[6321] = nil
@@ -128,17 +129,17 @@ check("grind marker: Combat Red #D95451", colourIs("D95451"), wui.nav.r)
 
 -- ".xp <6,1" is a hidden level condition (skip-step, textOnly + reverseLogic), not grinding
 visit(20, 60, talk("Aarnor"), { tag = "xp", level = 6, xp = 0, textOnly = true, skipstep = "1", reverseLogic = true })
-check("xp condition is not a grind step", wui.nav.iconTexture == nil, wui.nav.iconTexture)
+check("xp condition is not a grind step", wui.nav.iconTexture == OWN .. "DefaultWaypoint", wui.nav.iconTexture)
 
 -- Accept before the flight path (no quest context; the step's first instruction decides)
 quests[6323] = nil
 visit(13, 44, talk("Karos"), H.accept(6323, "Ride to the Undercity"), { tag = "fp", text = "Get the Sepulcher flight path" })
 check("accept first: available-quest icon, not the flight master icon", wui.nav.iconTexture ~= nil
-  and wui.nav.iconTexture:find("AvailableQuest$") ~= nil, wui.nav.iconTexture)
+  and wui.nav.iconTexture == OWN .. "QuestAvailable", wui.nav.iconTexture)
 
 -- Travel step: default icon
 visit(11, 40, talk("nobody"))
-check("plain text step: default icon", wui.nav.iconTexture == nil, wui.nav.iconTexture)
+check("plain text step: default icon", wui.nav.iconTexture == OWN .. "DefaultWaypoint" and wui.nav.r == nil, wui.nav.iconTexture)
 
 -- Status line, and other strategies
 visit(12, 42, talk("Karos"), { tag = "fly", text = "Fly to the Undercity" })

@@ -244,6 +244,8 @@ fire("QUEST_LOG_UPDATE"); advance(2)
 check("mode change held while a manual waypoint is tracked", st.setQuestCalls == calls and wui.writes == writes and wui.nav.name == "Repair")
 local h2 = goto_(14, 0); newStep(12, h2, header("Walk on"))
 point(h2); advance(2)
+check("new RestedXP destination keeps the active manual waypoint", wui.nav.name == "Repair")
+wui.nav = nil; st.user = false; fire("USER_WAYPOINT_UPDATED"); advance(2)
 check("bridge resumes on the next RestedXP destination", wui.nav.flags == "RestedXPWaypoint" and wui.nav.x == 0.14)
 
 -- 12. Same-coordinate label change still works (v0.3 regression)

@@ -144,6 +144,34 @@ local function GetRXPAddon()
     return nil
 end
 
+-- Audio follows actual guide progression, not the arrow's owning sticky or
+-- patrol step. GetGuideProgress is RestedXP's own current-step lookup. Require
+-- both steps to belong to this processed guide; ambiguity stays quiet.
+function RXP.GetAudioStep(target)
+    local addon = GetRXPAddon()
+    local guide = addon and addon.currentGuide
+    if type(guide) ~= "table" or type(guide.steps) ~= "table"
+        or type(addon.GetGuideProgress) ~= "function" then return nil end
+    local ok, index = pcall(addon.GetGuideProgress)
+    if not ok or not RXPW.IsFiniteNumber(index) then return nil end
+    local step = guide.steps[index]
+    local source = target and target.element
+    source = type(source) == "table" and source.step
+    if type(step) ~= "table" or not step.active or type(source) ~= "table"
+        or not source.active or type(source.index) ~= "number"
+        or guide.steps[source.index] ~= source then return nil end
+    local key = guide.key
+    if type(key) ~= "string" or key == "" then
+        if type(guide.group) ~= "string" or type(guide.name) ~= "string" then return nil end
+        key = format("%d:%s%s", #guide.group, guide.group, guide.name)
+    end
+    local id = step.stepId
+    if not ((type(id) == "string" and id ~= "") or RXPW.IsFiniteNumber(id)) then
+        id = step -- session-local identity; never infer progression from a renumbering
+    end
+    return { guide = key, revision = guide, step = id }
+end
+
 local function GetRXPProfile(addon)
     local settings = addon and addon.settings
     local profile = type(settings) == "table" and settings.profile
@@ -168,6 +196,17 @@ function RXP.SetArrowHidden(hidden)
     if hidden and type(frame) == "table" and type(frame.Hide) == "function" then pcall(frame.Hide, frame) end
     if type(addon.UpdateMap) == "function" then pcall(addon.UpdateMap) end
     return true
+end
+
+-- Proof for retiring a previous marker while the arrow temporarily remains
+-- stale. A missing/hidden current arrow alone does not prove obsolescence.
+function RXP.IsPreviousTargetObsolete(previous)
+    local element = previous and previous.element
+    if type(element) ~= "table" then return false end
+    if element.skip then return true end
+    local step = element.step
+    return type(step) == "table" and (not step.active
+        or (type(step.index) == "number" and step.index ~= previous.stepIndex))
 end
 
 -- Player distance in yards to the target's world position, using the
@@ -209,26 +248,29 @@ end
 
 local NEVER = {} -- sentinel: forces the next comparison to report a change
 local seenElement, seenZone, seenX, seenY, seenSkip, seenHidden, seenStep, seenActive = NEVER
+local seenStepIndex
 
 function RXP.HasTargetChanged()
     local arrow = _G.RXPG_ARROW
     local element = type(arrow) == "table" and arrow.element or nil
-    local zone, x, y, skip, hidden, step, active
+    local zone, x, y, skip, hidden, step, active, stepIndex
 
     if type(element) == "table" then
         zone, x, y = element.zone, element.x, element.y
         skip, hidden = element.skip, element.hidden
         step = element.step
-        if type(step) == "table" then active = step.active end
+        if type(step) == "table" then active, stepIndex = step.active, step.index end
     end
 
     if element == seenElement and zone == seenZone and x == seenX and y == seenY
-        and skip == seenSkip and hidden == seenHidden and step == seenStep and active == seenActive then
+        and skip == seenSkip and hidden == seenHidden and step == seenStep and active == seenActive
+        and stepIndex == seenStepIndex then
         return false
     end
 
     seenElement, seenZone, seenX, seenY = element, zone, x, y
     seenSkip, seenHidden, seenStep, seenActive = skip, hidden, step, active
+    seenStepIndex = stepIndex
     return true
 end
 

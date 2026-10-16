@@ -223,6 +223,8 @@ check("manual waypoint respected while RestedXP cycles the same objective", wui.
 check("outside change recorded", (RXPW.Sync.GetState().external or ""):find("another waypoint") ~= nil, RXPW.Sync.GetState().external)
 local n1 = goto_(170, 0, { text = "Run to the bridge" }); newStep(81, {}, n1)
 point(n1); advance(2)
+check("new RestedXP destination keeps the active manual waypoint", wui.nav.name == "Repair Vendor")
+WaypointUIAPI.Navigation.ClearUserNavigation(); advance(2)
 check("bridge resumes at RestedXP's next destination", wui.nav.flags == "RestedXPWaypoint" and H.navAt(170))
 
 ----------------------------------------------------------------------------

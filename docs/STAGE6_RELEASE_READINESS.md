@@ -1,5 +1,9 @@
 # Stage 6: release readiness — RestedXP Waypoint
 
+> Historical audit. The maintained packaging commands, policy and CurseForge
+> checklist are now in [RELEASING.md](RELEASING.md). Archive names, hashes and
+> test counts below describe the earlier audit, not the latest working tree.
+
 Audit date: 15 October 2026 (Europe/Berlin). TOC version: **0.6.1**.
 Scope: final maintenance audit and local release-candidate preparation.
 
@@ -55,7 +59,7 @@ Include in the proposed checkpoint:
 - New `RestedXPWaypoint_Camelot.toc`, including interface 16001, version 0.6.1,
   optional load dependencies and `SavedVariables: RXPWDB`; record deletion of
   `RXPWaypointBridge_Camelot.toc`.
-- `Art/Logo.blp` and **all nine** `Art/Icons/*.blp`. These generated files are
+- `Art/Logo.blp` and **all twelve** `Art/Icons/*.blp` (DefaultWaypoint, QuestAvailable and QuestComplete added after this audit). These generated files are
   required runtime assets and must be committed, not regenerated on installation.
 - Entire non-ignored `tests/` source, runner, package manifest and lockfile.
 - All eight `docs/*.md` reports, including this report. Historical reports remain
@@ -312,12 +316,12 @@ A sibling `.zip.sha256` is provided. An earlier intermediate candidate was kept
 without overwriting it; use the timestamp above for current runtime/README bytes.
 The archive does not include this development report or maintenance tools.
 
-Exactly **21 entries** under the single `RestedXPWaypoint/` prefix:
+Exactly **24 entries** under the single `RestedXPWaypoint/` prefix:
 
 - `RestedXPWaypoint_Camelot.toc` and the eight modules listed in section 2.
 - `Art/Logo.blp` (128x128).
-- `Art/Icons/{Bags,ClassTrainer,FlightMaster,FoodAndDrink,Grind,Innkeeper,ProfessionTrainer,Repair,StableMaster}.blp` (64x64 each).
-- `README.md` and `RELEASE_MANIFEST.json` (hashes/lengths of the 20 source files).
+- `Art/Icons/{Bags,ClassTrainer,DefaultWaypoint,FlightMaster,FoodAndDrink,Grind,Innkeeper,ProfessionTrainer,QuestAvailable,QuestComplete,Repair,StableMaster}.blp` (64x64 each).
+- `README.md` and `RELEASE_MANIFEST.json` (hashes/lengths of the 23 source files).
 
 No `.git`, tests, Node modules, Python/cache files, developer scripts, personal
 SavedVariables, dependency addons or logs. The allowlist is explicit, not a

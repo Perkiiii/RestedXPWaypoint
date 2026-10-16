@@ -46,7 +46,7 @@ local ENTRIES = {
     { key = "vendor",            label = "General vendor",     service = "Vendor" },
     { key = "banker",            label = "Banker",             service = "Banker" },
     { key = "grind",             label = "Grind",              service = "Grind" },
-    { key = "default",           label = "No icon (Waypoint UI default)" },
+    { key = "default",           label = "Default waypoint" },
 }
 local BY_KEY = {}
 for i, entry in ipairs(ENTRIES) do BY_KEY[entry.key] = i end
@@ -127,9 +127,10 @@ local function Show(index, distance)
     state.index = index
     state.distance = distance
     local note = ""
-    if not icon and presentation then
-        note = RXPW.WUI.GetPresentationIcon(presentation) and " - icon turned off in the appearance settings"
-            or " - icon unavailable (Waypoint UI version?)"
+    if not icon then
+        note = " - icon turned off in the appearance settings"
+    elseif presentation and not RXPW.WUI.GetPresentationIcon(presentation) then
+        note = " - icon unavailable (Waypoint UI version?), default icon shown"
     end
     RXPW.Print("Preview %d/%d (%s): %s (%s)%s.", index, #ENTRIES, distance, entry.label, entry.key, note)
     Notify()
@@ -206,14 +207,17 @@ function Preview.GetEntries()
     return list
 end
 
--- The entry's own icon art and colour (ignoring the appearance settings), or
--- nil for the Waypoint UI default entry or an unavailable quest icon.
+-- The entry's own icon art and colour (ignoring the appearance settings).
+-- The default entry, and a quest icon this Waypoint UI version cannot show,
+-- use the bridge's default icon; it has no colour of its own (Waypoint UI
+-- tints it with the marker colour).
 function Preview.GetEntryArt(key)
     local entry = ENTRIES[BY_KEY[key] or 0]
     if not entry then return nil end
     local presentation = EntryPresentation(entry)
     local icon = RXPW.WUI.GetPresentationIcon(presentation)
-    return icon, icon and RXPW.WUI.GetPresentationTint(presentation) or nil
+    if not icon then return RXPW.WUI.GetDefaultIcon(), nil end
+    return icon, RXPW.WUI.GetPresentationTint(presentation)
 end
 
 -- { active, key, distance, cycling, orphan } (orphan: a leftover preview

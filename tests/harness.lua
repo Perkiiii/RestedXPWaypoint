@@ -175,6 +175,18 @@ C_SuperTrack = {
   IsSuperTrackingAnything = function() return st.quest ~= nil or st.user end,
   ClearAllSuperTracked = function() st.quest = nil; st.user = false; H.fire("SUPER_TRACKING_CHANGED") end,
 }
+-- Secure post-hook and stack provenance model. The source is intentionally
+-- separate from quest ID / event timing, just as it is in the client.
+local selectionStack
+function debugstack() return H.selectionStack or selectionStack or "[Interface/AddOns/Blizzard_QuestLog/QuestLog.lua]:123: in function 'SelectQuest'" end
+function hooksecurefunc(object, method, callback)
+  local original = object[method]
+  object[method] = function(...)
+    local result = original(...)
+    callback(...)
+    return result
+  end
+end
 C_Map.GetUserWaypoint = function() return st.waypoint end
 -- quests[id] = { title, ready, poi = native distance (yd) or nil, objectives = { {type, finished, numFulfilled, numRequired}, ... } }
 local quests = {}
@@ -209,18 +221,24 @@ end })
 -- with wui.pathfinding the path is rebuilt (pathBuilds) and the native waypoint
 -- becomes a path-step waypoint (IsPathStepWaypointTracked). Counters only: no
 -- rendering, timing or FPS is modelled.
-local wui = { nav = nil, writes = 0, clears = 0, markerResets = 0, pathBuilds = 0 }
+local wui = { nav = nil, writes = 0, clears = 0, markerResets = 0, pathBuilds = 0,
+  audioOptions = {}, markerIntroEvents = 0 }
 H.wui = wui
 WaypointUIAPI = { Navigation = {
   NewUserNavigation = function(o)
     wui.writes = wui.writes + 1
+    table.insert(wui.audioOptions, o.suppressAudio)
     record("navigation", { name = o.name, flags = o.flags, mapID = o.mapID, x = o.x, y = o.y })
     if wui.rejects and wui.rejects > 0 then wui.rejects = wui.rejects - 1; return nil end
     if wui.errors and wui.errors > 0 then wui.errors = wui.errors - 1; error("temporary failure") end
     wui.nav = { name = o.name, mapID = o.mapID, x = o.x / 100, y = o.y / 100, flags = o.flags, stripCoordinates = o.stripCoordinates,
-      iconTexture = o.iconTexture, iconType = o.iconType, r = o.r, g = o.g, b = o.b, suppressAudio = o.suppressAudio }
+      iconTexture = o.iconTexture, iconType = o.iconType, r = o.r, g = o.g, b = o.b, requestRecolor = o.requestRecolor,
+      suppressAudio = o.suppressAudio }
     if not o.suppressAudio then wui.audible = (wui.audible or 0) + 1 end
     wui.markerResets = wui.markerResets + 1
+    -- One potential intro per reset; real waypoint/pinpoint choice and sound
+    -- delivery depend on visibility, animation and the player's audio settings.
+    wui.markerIntroEvents = wui.markerIntroEvents + 1
     st.waypoint = { uiMapID = o.mapID, position = { x = o.x / 100, y = o.y / 100 } }
     if wui.pathfinding then
       wui.pathBuilds = wui.pathBuilds + 1
@@ -240,9 +258,12 @@ WaypointUIAPI = { Navigation = {
     return wui.pathfinding == true and wui.nav ~= nil and st.user and st.waypoint ~= nil and st.waypoint == wui.pathStep
   end,
   IsUserNavigationFlagged = function(f) return wui.nav ~= nil and wui.nav.flags == f end,
-  ClearUserNavigation = function()
+  ClearUserNavigation = function(preserveWaypoint, suppressAdvance)
     record("clear", wui.nav and wui.nav.flags)
     wui.clears = wui.clears + 1; wui.nav = nil
+    wui.lastClear = { preserveWaypoint = preserveWaypoint, suppressAdvance = suppressAdvance }
+    if wui.onClear then wui.onClear() end
+    if preserveWaypoint then return end
     st.waypoint = nil
     H.fire("USER_WAYPOINT_UPDATED")
     -- Waypoint UI's USER_WAYPOINT_UPDATED handler: a removed supertracked waypoint -> ClearAllSuperTracked
@@ -271,7 +292,7 @@ function H.restoreSession(nav, tracked)
   wui.nav = {
     name = nav.name, mapID = nav.mapID or 1421, x = nav.x or 0.5, y = nav.y or 0.5,
     fromWUI = true, flags = nav.flags, iconTexture = nav.iconTexture,
-    iconType = nav.iconTexture and "TEXTURE" or nil, r = nav.r, g = nav.g, b = nav.b,
+    iconType = nav.iconTexture and "TEXTURE" or nil, r = nav.r, g = nav.g, b = nav.b, requestRecolor = nav.requestRecolor,
     stripCoordinates = nav.stripCoordinates, superTracked = tracked and true or false,
   }
   st.waypoint = { uiMapID = wui.nav.mapID, position = { x = wui.nav.x, y = wui.nav.y } }
@@ -279,7 +300,9 @@ function H.restoreSession(nav, tracked)
 end
 function H.setExternalQuest(questID, source)
   writer = source or "player"
+  selectionStack = source == "RestedXP" and "[Interface/AddOns/RXPGuides/functions.lua]:1850: in function <...>" or nil
   C_SuperTrack.SetSuperTrackedQuestID(questID)
+  selectionStack = nil
   writer = "bridge"
 end
 

@@ -338,7 +338,9 @@ do
   H.advance(1)
   local b = H.goto_(70, 0, { text = "Follow the new route" })
   H.newStep(2, {}, b); H.point(b); H.advance(2)
-  check("F2 override hold ends at a genuinely new route destination", H.navAt(70)
+  check("F2 new route keeps the external quest active", H.st.quest == 202 and not H.st.user)
+  H.setExternalQuest(0); H.advance(2)
+  check("F2 override hold ends after external quest clearance", H.navAt(70)
     and H.st.user and H.st.quest == nil and H.wui.nav.flags == "RestedXPWaypoint")
 end
 

@@ -13,9 +13,9 @@ H.setActiveSteps(step); H.point(a); advance(2)
 local function actual(label, ready)
  local n = w.nav
  return H.navAt(40) and n.flags == "RestedXPWaypoint" and n.name == label
-  and n.iconTexture == "Interface\\AddOns\\WaypointUI\\Art\\Icons\\" .. (ready and "CompleteQuest" or "IncompleteQuest")
-  and n.r == (ready and 1 or 200/255) and n.g == (ready and 1 or 200/255)
-  and n.b == (ready and 156/255 or 200/255)
+  and n.iconTexture == (ready and "Interface\\AddOns\\RestedXPWaypoint\\Art\\Icons\\QuestComplete" or "Interface\\AddOns\\WaypointUI\\Art\\Icons\\IncompleteQuest")
+  and n.r == (ready and 1 or 200/255) and n.g == (ready and 209/255 or 200/255)
+  and n.b == (ready and 0 or 200/255)
 end
 check("F4 initial presentation", actual("1/15 Crystals"))
 obj.text = "2/15 Crystals"; H.fire("QUEST_LOG_UPDATE"); advance(2)

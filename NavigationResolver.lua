@@ -302,6 +302,29 @@ local function GetActiveSteps()
 end
 Nav.GetActiveSteps = GetActiveSteps
 
+-- Attribution only: an actually accepted quest belongs to the guide when its
+-- ID appears in active guide work. This never selects a destination or grants
+-- native eligibility. Completed accept lines still identify the acceptance.
+function Nav.HasActiveQuest(element, questID)
+    if not RXPW.IsFiniteNumber(questID) or questID <= 0 then return false end
+    local function InStep(step)
+        if type(step) ~= "table" or not step.active or type(step.elements) ~= "table" then return false end
+        if step.track == questID then return true end
+        for _, instruction in ipairs(step.elements) do
+            if type(instruction) == "table" and instruction.questId == questID
+                and (instruction.tag == "accept" or instruction.tag == "complete" or instruction.tag == "turnin") then
+                return true
+            end
+        end
+        return false
+    end
+    if type(element) == "table" and InStep(element.step) then return true end
+    for _, step in ipairs(GetActiveSteps() or {}) do
+        if type(step) == "table" and type(step.index) == "number" and InStep(step) then return true end
+    end
+    return false
+end
+
 -- True for a sticky #loop step (#completewith ...): a patrol circuit that
 -- stays active while later steps run.
 local function IsStickyLoop(step)
@@ -796,20 +819,59 @@ function Nav.GetTrackingState()
     local ST = type(C_SuperTrack) == "table" and C_SuperTrack or {}
     local quest = Nav.GetSuperTrackedQuest()
     local priority = Call(ST.GetHighestPrioritySuperTrackingType)
-    local empty = Call(ST.IsSuperTrackingAnything) == false or (quest == nil and priority == nil)
+    local anything = Call(ST.IsSuperTrackingAnything)
+    local empty = anything == false or (anything == nil and quest == nil and priority == nil)
     return quest, priority, empty
+end
+
+-- Observe intent at the setter, because SUPER_TRACKING_CHANGED has no caller.
+-- Only the immediate Lua caller counts: a manual UI callback deeper in an RXP
+-- event stack must not inherit RXP attribution. Unknown/missing stacks fail closed.
+-- Secure post-hooks never replace either addon's functions and never write tracking.
+local trackingObserverInstalled = false
+local writingNativeQuest = false
+function Nav.ObserveQuestSelections(listener)
+    if trackingObserverInstalled then return true end
+    if type(hooksecurefunc) ~= "function" or type(debugstack) ~= "function"
+        or type(C_SuperTrack) ~= "table" or type(C_SuperTrack.SetSuperTrackedQuestID) ~= "function" then return false end
+    local ok = pcall(hooksecurefunc, C_SuperTrack, "SetSuperTrackedQuestID", function(questID)
+        if writingNativeQuest then return end
+        if not RXPW.IsFiniteNumber(questID) or questID < 0 or questID % 1 ~= 0 then return end
+        local stackOK, stack = pcall(debugstack, 2, 12, 0)
+        local source = "unknown caller"
+        if stackOK and type(stack) == "string" then
+            for line in stack:gmatch("[^\n]+") do
+                local path = line:gsub("\\", "/")
+                -- Skip this observer and C frames; inspect just the first Lua source.
+                if path:find('%.lua["%]]*:%d+') and not path:find("RestedXPWaypoint/NavigationResolver.lua", 1, true) then
+                    if path:find("AddOns/RXPGuides/functions.lua", 1, true)
+                        or path:find("AddOns/RXPGuides/GuideWindow.lua", 1, true) then
+                        source = "RestedXP setter"
+                    end
+                    break
+                end
+            end
+        end
+        listener(questID, source)
+    end)
+    trackingObserverInstalled = ok
+    return ok
 end
 
 function Nav.SetNativeQuest(questID)
     if not Nav.IsNativeSupported() then return false end
+    writingNativeQuest = true
     local ok = pcall(C_SuperTrack.SetSuperTrackedQuestID, questID)
+    writingNativeQuest = false
     return ok
 end
 
 -- Stops supertracking questID, but only if it is still the supertracked quest.
 function Nav.ReleaseNativeQuest(questID)
     if questID and Nav.GetSuperTrackedQuest() == questID then
+        writingNativeQuest = true
         pcall(C_SuperTrack.SetSuperTrackedQuestID, 0)
+        writingNativeQuest = false
         return true
     end
     return false
@@ -1164,6 +1226,9 @@ end
 -- Detected from RestedXP's structured tags in the waypoint's step:
 --   .fp / .fly                      -> FlightMaster
 --   .home (set hearthstone)         -> Innkeeper
+--     (textOnly .home is a .bindlocation condition, not a service action)
+--   explicit Innkeeper conversation / Hearthstone binding instruction
+--                                  -> Innkeeper (narrow English fallback)
 --   .stable                         -> StableMaster
 --   .trainer / .train  + .skill     -> ProfessionTrainer (".skill <profession>" gates the step)
 --   .trainer / .train  (no .skill)  -> ClassTrainer (also pet/weapon trainers)
@@ -1207,6 +1272,23 @@ end
 
 local function IsPurchaseText(text)
     return ServiceText(text):find("^buy%f[%W]") ~= nil
+end
+
+-- Narrow English fallback for actions without a dedicated service directive.
+-- Read the current instruction, never quest titles, NPC names or nearby notes.
+local function InnkeeperAction(e)
+    if e.textOnly or (e.tag and e.tag ~= "complete" and e.tag ~= "gossip") then return nil end
+    local text = ServiceText(e.text):gsub("^%d+/%d+%s+", ""):gsub("[%.!]+$", "")
+    for _, verb in ipairs({ "speak with", "speak to", "talk to", "talk with" }) do
+        if text == verb .. " the innkeeper" or text == verb .. " an innkeeper"
+            or text == verb .. " innkeeper" then
+            return "explicit Innkeeper conversation: " .. text
+        end
+    end
+    if text:match("^set your hearthstone to %S") or text:match("^bind your hearthstone to %S")
+        or text:match("^change your hearthstone to %S") or text == "make this inn your home" then
+        return "explicit Hearthstone binding: " .. text
+    end
 end
 
 local function IsTraining(e)
@@ -1285,7 +1367,7 @@ local function StepService(step, element)
             local tag = e.tag
             if tag == "fp" or tag == "fly" then
                 return result("FlightMaster", "." .. tag)
-            elseif tag == "home" then
+            elseif tag == "home" and not e.textOnly then
                 return result("Innkeeper", ".home")
             elseif tag == "stable" then
                 return result("StableMaster", ".stable")
@@ -1315,6 +1397,8 @@ local function StepService(step, element)
             elseif not tag and e.textOnly and not e.hideTooltip then
                 heading = e.text
             elseif not e.textOnly and (e.text ~= nil or tag == "collect") then
+                local evidence = InnkeeperAction(e)
+                if evidence then return result("Innkeeper", evidence) end
                 -- An unrecognised active action is not permission to search for
                 -- a more attractive service later in the step.
                 return nil
@@ -1327,27 +1411,41 @@ Nav.StepService = StepService
 
 -- Returns { questID, status = "Available"|"Incomplete"|"Complete", iconType, tintKey, source },
 -- or { service = "FlightMaster"|"ClassTrainer"|..., source } for a service step, or nil.
--- Uses the decision's quest context when it has one (structural association,
+-- A specific Innkeeper action may refine generic objective presentation.
+-- Otherwise uses the decision's quest context (structural association,
 -- v0.5.4), else the waypoint's own step activity (the quest work the step is
 -- leading to, e.g. a collection route before "Click on the Crystals").
 function Nav.GetPresentation(target, decision)
     local c = decision and decision.context
+    local element = target and target.element
+    local step = type(element) == "table" and type(element.step) == "table" and element.step or nil
+    local service, source, association
+    if step and type(step.elements) == "table" then
+        service, source, association = StepService(step, element)
+    end
+    -- Only a confidently identified Innkeeper action refines generic objective
+    -- presentation. Quest pickups/turn-ins and other service priorities stay intact.
+    if service == "Innkeeper" and (not c or c.kind == "objective")
+        and not (decision and decision.routeCritical) then
+        return { service = service, source = format("step %s %s", tostring(step.index or "?"), source),
+                 serviceSource = association .. " " .. source,
+                 iconReason = "Innkeeper action detected: " .. source }
+    end
     if c then
         local status = c.ready and "Complete" or "Incomplete"
         return { questID = c.questID, status = status, iconType = Nav.GetQuestIconType(c.questID),
-                 tintKey = TintKey(c.questID, status), source = tostring(c.source), kind = c.kind }
+                 tintKey = TintKey(c.questID, status), source = tostring(c.source), kind = c.kind,
+                 iconReason = "quest " .. tostring(c.kind) .. " association",
+                 rejectedService = service and (service .. ": explicit quest context takes precedence") }
     end
-    local element = target and target.element
-    local step = type(element) == "table" and type(element.step) == "table" and element.step or nil
     if not step or type(step.elements) ~= "table" then return nil end
     -- The step can contain several destinations. An earlier quest acceptance
     -- must not lend its icon to a later vendor/trainer visit (or vice versa).
-    -- Keep explicit quest context above authoritative; scope only the fallback.
+    -- Keep the remaining explicit quest context authoritative; scope the fallback.
     local first, last = ServiceBlock(element, step)
     if not first then return nil end
     local kind, questID = StepActivity(step, first, last)
     if not kind then
-        local service, source, association = StepService(step, element)
         if service then
             return { service = service, source = format("step %s %s", tostring(step.index or "?"), source),
                      serviceSource = association .. " " .. source }

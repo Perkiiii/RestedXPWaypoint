@@ -113,7 +113,8 @@ H.setActiveSteps(p3, sBoth)
 point(patrol[1]); advance(2)
 st.quest = 1004; st.user = false -- the player picked quest 1004 in the quest tracker
 slash("mode native-first"); advance(2)
-check("already supertracked candidate is kept", select(2, H.mode()) == 1004 and H.lastChat("selected quest 1004: already supertracked") ~= nil)
+local picked = RXPW.Nav.Decide(RXPW.RXP.GetTarget(), "native-first", RXPW.Sync.GetDecisionContext())
+check("already supertracked candidate is kept", st.quest == 1004 and picked.questID == 1004)
 -- without that, guide order
 slash("mode coordinates"); st.quest = nil
 slash("mode native-first"); advance(2)
@@ -184,7 +185,7 @@ quests[92462].objectives[1] = kill(8, 8); quests[92462].ready = true
 H.fire("QUEST_LOG_UPDATE"); point(patrol[3]); advance(2)
 check("native -> native switch held while a manual waypoint is tracked", wui.nav and wui.nav.name == "Repair Vendor"
   and st.setQuestCalls == calls and wui.writes == writes)
-check("hold is logged", H.lastChat("Mode change held: another waypoint is tracked %(Repair Vendor%)") ~= nil)
+check("hold is logged", H.lastChat("Synchronization paused: external navigation selected %(Repair Vendor%)") ~= nil)
 -- player clears the manual waypoint -> next evaluation switches to the remaining quest
 wui.nav = nil; st.user = false
 H.fire("USER_WAYPOINT_UPDATED"); H.fire("QUEST_LOG_UPDATE"); advance(2)

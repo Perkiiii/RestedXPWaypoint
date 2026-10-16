@@ -28,7 +28,7 @@ const expectedTocFiles = [
 if (!/^## Interface: 16001$/m.test(toc)
     || !/^## Title: RestedXP Waypoint$/m.test(toc)
     || !/^## Notes: An unofficial companion addon that displays RestedXP navigation through Waypoint UI\.$/m.test(toc)
-    || !/^## Version: 0\.6\.1$/m.test(toc)
+    || !/^## Version: (?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/m.test(toc)
     || !/^## OptionalDeps: RXPGuides, WaypointUI$/m.test(toc)
     || !/^## SavedVariables: RXPWDB$/m.test(toc)
     || /RXPWaypointBridge/.test(toc)

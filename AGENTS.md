@@ -147,7 +147,7 @@ The load order is set in the `.toc`. All modules share the addon namespace `RXPW
 
 | File | Namespace | Responsibility |
 |---|---|---|
-| `Core.lua` | `RXPW` | Settings (`RXPWDB`: `autoSync`, `debug`, `strategy` = `"coordinates"` (default for new installs), `"hybrid"` or `"native-first"`; a saved value is always kept; v0.6.0 adds `questIcons`, `serviceIcons`, `customColors`, all default `true`). **`RXPW.Config` (v0.6.0) is the only way a setting changes:** `Get`, `GetDefault`, `Set(key, value)` (validates, saves, applies the existing behaviour and notifies listeners), `Toggle`, `RestoreDefaults`, `RegisterListener`, `Notify`. The slash commands and the settings page both call it. `/rxpw config` (`settings`, `options`) opens the page. `RXPW.Print`/`RXPW.PrintLine`/`RXPW.Debug`, shared helpers, slash commands (including `/rxpw mode`), `ADDON_LOADED`/`PLAYER_LOGIN` |
+| `Core.lua` | `RXPW` | Settings (`RXPWDB`: `autoSync`, `debug`, `strategy` = `"coordinates"`, `"hybrid"` (recommended default for new installs) or `"native-first"`; a saved value is always kept; v0.6.0 adds `questIcons`, `serviceIcons`, `customColors`, all default `true`). **`RXPW.Config` (v0.6.0) is the only way a setting changes:** `Get`, `GetDefault`, `Set(key, value)` (validates, saves, applies the existing behaviour and notifies listeners), `Toggle`, `RestoreDefaults`, `RegisterListener`, `Notify`. The slash commands and the settings page both call it. `/rxpw config` (`settings`, `options`) opens the page. `RXPW.Print`/`RXPW.PrintLine`/`RXPW.Debug`, shared helpers, slash commands (including `/rxpw mode`), `ADDON_LOADED`/`PLAYER_LOGIN` |
 | `LabelResolver.lua` | `RXPW.Label` | `Resolve(element)` returns `{ label, source, cleaned, shortened, fallback, raw }`, using the priority documented at the top of the file. `Clean(text)` returns `cleaned, wasCleaned, wasShortened`. Reads RestedXP step data. |
 | `RXPAdapter.lua` | `RXPW.RXP` | Reads RestedXP's arrow target. `GetTarget()` returns `(target, reason)`: `reason` is nil when the target is valid, and then `target.key` is set. `target` also has `label`, `labelInfo` and `stripCoordinates`. `target.element` is the raw RestedXP element (read-only). `HasTargetChanged()` is a cheap poll comparison that deliberately ignores text. `ResetObservation()`. `GetArrowElement()` (raw element, no label work, for the activity check). `DestinationKey()`. `GetDistanceToTarget()` uses HereBeDragons through `LibStub`, with the element's `wx`/`wy`. |
 | `NavigationResolver.lua` | `RXPW.Nav` | Structure-only analysis, testable offline: `FindTurnIn(element)` (hybrid; v0.5.8 adds explicit travel protection and parent validation) and `FindQuestTarget(element)` (native-first: turn-ins and `.complete` objectives). `GetQuestState(questID, withObjectives)`. `Decide(target, strategy)` returns `{ mode, reason, nativeEligible, kind, classification, questID, questName, questState, objectives, progress, pendingTurnIns, nativeId, tolerance, analysis }`. Native wrappers: `SetNativeQuest()`, `ReleaseNativeQuest()` (only if still supertracked), `IsNativeQuestActive()`, `VerifyNative()`. Reads RestedXP step data and calls `C_SuperTrack`, `C_QuestLog` and `C_Navigation`. |
@@ -330,8 +330,19 @@ The load order is set in the `.toc`. All modules share the addon namespace `RXPW
 3. 0.3: step descriptions (done).
 4. 0.4: hybrid navigation for quest turn-ins (done).
 5. 0.5: native-first quest navigation (implemented, experimental).
-6. Stage 6: checkpoint, final audit, packaging and in-game release-candidate acceptance. Keep coordinates as the default.
+6. Stage 6: checkpoint, final audit, packaging and in-game release-candidate acceptance. As of v0.6.2, Hybrid is the recommended default; preserve saved strategy selections.
 7. v1.0 requires final in-game verification. Arrow hiding, on/off and settings already exist; world-coordinate targets remain a future enhancement. Revalidate against future client/dependency updates.
+
+## Menu defaults (v0.6.2)
+
+Hybrid is recommended. Debug is off; auto-sync, quest icons, service icons,
+custom colours and Hide RestedXP Arrow default to on. The external arrow option
+is applied only via `RXP.SetArrowHidden(true)` on a new installation and explicit
+Restore Defaults. Normal startup preserves existing choices. A saved
+`arrowDefaultPending` marker defers that one-time operation if RestedXP is absent;
+it is removed on success, with no polling or duplicate stored arrow value.
+Restore Defaults now includes this external arrow option; earlier milestone
+notes saying it was untouched are historical.
 
 ## Testing checklist for any change
 

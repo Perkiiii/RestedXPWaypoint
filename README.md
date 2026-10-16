@@ -5,7 +5,7 @@ chooses the route; RestedXP Waypoint mirrors its resolved waypoint into Waypoint
 UI's in-world navigation. It is not affiliated with either project.
 
 See `RestedXPWaypoint_Camelot.toc` or `/rxpw status` for the installed version,
-and [CHANGELOG.md](CHANGELOG.md) for release notes. Coordinates is the default
+and [CHANGELOG.md](CHANGELOG.md) for release notes. Hybrid is the recommended default
 for new installations; existing settings are preserved. Native First remains
 experimental.
 
@@ -42,7 +42,7 @@ installing or changing TOC/module files; `/reload` is sufficient for Lua edits.
 | `/rxpw mode ...` | Behaviour |
 |---|---|
 | `coordinates` | Always follow RestedXP's actual coordinates. Quest/service context changes presentation only. |
-| `hybrid` | Use native quest tracking for eligible ready turn-ins; preserve intermediate and explicit travel points. |
+| `hybrid` (recommended, default) | Use native quest tracking for eligible ready turn-ins; preserve intermediate and explicit travel points. |
 | `native-first` | Also allow eligible `.complete` quest objectives, with structural and quest-log checks plus native destination verification. |
 
 Native tracking is selected only when RestedXP's instruction structure supports
@@ -109,13 +109,17 @@ Appearance, Waypoint Preview and Advanced sections.
   Keep "When commencing /way navigation..." enabled if desired. These preferences
   also affect Waypoint UI markers outside this addon.
 - Hide RestedXP Arrow mirrors RestedXP's own profile option. Its waypoint data
-  continues updating. This option is separate from `RXPWDB` and Restore Defaults.
+  continues updating. It is enabled for new installations and by Restore Defaults;
+  the value itself is saved in RestedXP's profile. Existing choices are preserved
+  during normal startup.
 - Preview selection, Close/Far, Show, Next, All and Stop use the same preview
   session as `/rxpw preview`. A preview pauses automatic sync; stopping resumes
   it if it was previously running and auto-sync is still enabled.
 - Advanced provides Status, Inspect and confirmed Restore Defaults. Defaults
-  restore this addon's settings, including Coordinates and auto-sync on, so
-  automatic navigation can resume or change. Dependency settings are untouched.
+  restore this addon's settings, including Hybrid and auto-sync on, so
+  automatic navigation can resume or change. Hide RestedXP Arrow is also enabled;
+  other dependency settings are untouched. Debug defaults to off; all other
+  checkboxes on this page default to on.
 
 Settings persist in `RXPWDB` across reload/restart. Preview selection is temporary.
 The page cannot be opened during combat.

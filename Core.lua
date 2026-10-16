@@ -31,7 +31,7 @@ local floor = math.floor
 -- Settings (SavedVariables: RXPWDB)
 --------------------------------------------------------------------------------
 
--- strategy: "coordinates" (v0.3 behaviour, safe default), "hybrid" (v0.4:
+-- strategy: "coordinates" (v0.3 behaviour), "hybrid" (recommended default; v0.4:
 -- native quest supertracking for eligible turn-ins) or "native-first" (v0.5:
 -- native supertracking for eligible turn-ins and quest objectives).
 local STRATEGIES = { coordinates = true, hybrid = true, ["native-first"] = true }
@@ -43,7 +43,7 @@ local STRATEGIES = { coordinates = true, hybrid = true, ["native-first"] = true 
 local DEFAULTS = {
     autoSync = true,
     debug = false,
-    strategy = "coordinates",
+    strategy = "hybrid",
     questIcons = true,
     serviceIcons = true,
     customColors = true,
@@ -58,7 +58,9 @@ for key, value in pairs(DEFAULTS) do RXPW.db[key] = value end
 local function LoadSettings()
     local db = _G.RXPWDB
     if type(db) ~= "table" then
-        db = {}
+        -- One-time default for the external arrow option. Keep it pending if
+        -- RestedXP is unavailable; never overwrite a returning user's choice.
+        db = { arrowDefaultPending = true }
         _G.RXPWDB = db
     end
     for key, value in pairs(DEFAULTS) do
@@ -66,6 +68,14 @@ local function LoadSettings()
     end
     if not STRATEGIES[db.strategy] then db.strategy = DEFAULTS.strategy end
     RXPW.db = db
+end
+
+local function ApplyArrowDefault()
+    if RXPW.db.arrowDefaultPending == true
+        and type(RXPW.RXP.SetArrowHidden) == "function"
+        and RXPW.RXP.SetArrowHidden(true) then
+        RXPW.db.arrowDefaultPending = nil
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -459,12 +469,15 @@ function Config.Toggle(key)
     return Config.Set(key, not RXPW.db[key])
 end
 
--- Resets this addon's settings through Config.Set. Restoring auto-sync and
--- strategy can resume or change bridge navigation; Waypoint UI settings stay.
+-- Resets this page's settings through Config.Set and the approved RXP adapter.
+-- Also hides RestedXP's arrow. Auto-sync/strategy can resume or change bridge
+-- navigation; Waypoint UI settings stay.
 function Config.RestoreDefaults()
     for _, key in ipairs(SETTING_ORDER) do
         if RXPW.db[key] ~= DEFAULTS[key] then Config.Set(key, DEFAULTS[key]) end
     end
+    RXPW.db.arrowDefaultPending = true
+    ApplyArrowDefault()
     RXPW.Print("Settings restored to their defaults.")
     Config.Notify("defaults")
 end
@@ -582,6 +595,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
     self:UnregisterEvent("PLAYER_LOGIN")
 
     -- All non-load-on-demand addons are loaded by PLAYER_LOGIN.
+    ApplyArrowDefault()
     local rxp = RXPW.RXP.GetStatus()
     local wui = RXPW.WUI.GetStatus()
 

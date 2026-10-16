@@ -63,7 +63,7 @@ local RED = { 0.9, 0.3, 0.3 }
 local STRATEGY_TEXT = {
     coordinates = { label = "RestedXP Coordinates",
         desc = "Always follow RestedXP's exact waypoint coordinates. Quest and service context still determine how the waypoint appears." },
-    hybrid = { label = "Hybrid",
+    hybrid = { label = "Hybrid (Recommended)",
         desc = "Follow RestedXP's route while using native Blizzard quest tracking for eligible turn-ins." },
     ["native-first"] = { label = "Native First",
         desc = "Prefer native Blizzard quest navigation when appropriate, while preserving important RestedXP intermediate and travel waypoints." },
@@ -604,7 +604,7 @@ local function Build()
         end),
         "This is RestedXP's own \"Hide waypoint arrow\" option (Options > AddOns > RestedXP Guides > Features), "
             .. "saved in your RestedXP profile; both checkboxes always show the same value. RestedXP keeps choosing "
-            .. "waypoints while its arrow is hidden, so synchronization is unaffected. Restore Defaults does not change it.")
+            .. "waypoints while its arrow is hidden, so synchronization is unaffected. Enabled by default for new installations; Restore Defaults enables it too.")
     Note("Manual waypoints are respected. RestedXP Waypoint will not intentionally override navigation selected by you or another addon.")
 
     Section("Waypoint Appearance")
@@ -681,12 +681,12 @@ local function Build()
     Note("Status and inspection output is printed to the chat window (same as /rxpw status and /rxpw inspect).")
     controls.restore = FlatButton(content, "Restore Defaults", function() CloseList(); Panel.ConfirmRestore() end)
     ButtonRow({ controls.restore })
-    Note("Restores only RestedXP Waypoint's settings. Automatic navigation may resume or change; Waypoint UI's settings are unchanged.")
+    Note("Restores this page's defaults, including hiding RestedXP's arrow. Automatic navigation may resume or change; Waypoint UI's settings are unchanged.")
 end
 
 -- Restore Defaults always asks first (StaticPopup; else a second click).
 local CONFIRM_TEXT = "Restore RestedXP Waypoint's settings to their defaults?\n\n"
-    .. "Automatic sync on, RestedXP Coordinates, icons and colours on, debug off. "
+    .. "Automatic sync on, Hybrid, Hide RestedXP Arrow on, icons and colours on, debug off. "
     .. "Automatic navigation may resume or change. Waypoint UI's settings are unchanged."
 
 function Panel.ConfirmRestore()

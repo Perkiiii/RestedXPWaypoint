@@ -148,7 +148,8 @@ function H.fire(event, ...) for _, f in ipairs(frames) do if f.events[event] and
 H.chat = {}
 DEFAULT_CHAT_FRAME = { AddMessage = function(_, m) table.insert(H.chat, m) end }
 SlashCmdList = {}
-H.versions = { RestedXPWaypoint = "0.6.1", WaypointUI = "1.7.3" }
+-- The runner supplies the actual TOC version, just as WoW supplies metadata.
+H.versions = { RestedXPWaypoint = assert(ADDON_VERSION, "Runner must provide the TOC version"), WaypointUI = "1.7.3" }
 C_AddOns = { IsAddOnLoaded = function() return true end, GetAddOnMetadata = function(a) return H.versions[a] or "x" end }
 C_Map = { GetMapInfo = function(id) return { name = "Map" .. id } end, CanSetUserWaypointOnMap = function() return true end }
 

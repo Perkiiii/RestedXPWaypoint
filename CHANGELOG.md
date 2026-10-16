@@ -10,6 +10,24 @@ historical release notes have not been reconstructed here.
 Record future changes here under Added, Changed, Fixed or Known Issues. Move them
 to a versioned section when preparing that version.
 
+## [0.6.2] - Publication pending
+
+### Changed
+
+- Hybrid is the recommended default navigation strategy for new installations
+  and Restore Defaults. Existing saved strategy selections are preserved.
+- The navigation dropdown labels it "Hybrid (Recommended)".
+- Debug remains off by default; all other menu checkboxes default to on.
+  Hide RestedXP Arrow is enabled once for a new installation and by Restore
+  Defaults through RestedXP's own option. Existing choices survive normal startup.
+
+### Fixed
+
+- Updated the authoritative TOC version to 0.6.2, which supplies the settings
+  menu, slash-command output and release package filenames.
+- Settings tests now use the TOC version instead of a duplicated version value
+  and check that the menu follows installed addon metadata.
+
 ## [0.6.1] - Publication pending
 
 ### Added

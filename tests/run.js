@@ -37,6 +37,7 @@ if (!/^## Interface: 16001$/m.test(toc)
     process.exit(1);
 }
 console.log('== RestedXPWaypoint_Camelot.toc metadata and module order passed');
+const addonVersion = toc.match(/^## Version: (.+)$/m)[1].trim();
 const files = fs.readdirSync(__dirname).filter((f) => f.endsWith('_test.lua')).sort();
 let failed = 0;
 
@@ -46,6 +47,8 @@ for (const file of files) {
     lualib.luaL_openlibs(L);
     lua.lua_pushstring(L, to_luastring(root));
     lua.lua_setglobal(L, to_luastring('ADDON_ROOT'));
+    lua.lua_pushstring(L, to_luastring(addonVersion));
+    lua.lua_setglobal(L, to_luastring('ADDON_VERSION'));
     const testPath = path.join(__dirname, file).replace(/\\/g, '/');
     if (lauxlib.luaL_dofile(L, to_luastring(testPath)) !== 0) {
         console.log(`FAILED: ${lua.lua_tojsstring(L, -1)}`);

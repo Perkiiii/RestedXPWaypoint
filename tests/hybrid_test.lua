@@ -96,7 +96,7 @@ local RXPW = {}
 for _, f in ipairs({ "Core.lua", "LabelResolver.lua", "RXPAdapter.lua", "NavigationResolver.lua", "WaypointAdapter.lua", "Sync.lua" }) do
   assert(loadfile(ROOT .. "/" .. f))("RestedXPWaypoint", RXPW)
 end
-RXPWDB = { debug = true }
+RXPWDB = { debug = true, strategy = "coordinates" }
 fire("ADDON_LOADED", "RestedXPWaypoint")
 fire("PLAYER_LOGIN")
 local slash = SlashCmdList.RESTEDXPWAYPOINT
@@ -118,8 +118,8 @@ local function lastChat(pattern) for i = #chat, 1, -1 do if chat[i]:find(pattern
 local function failureText() return (RXPW.Sync.GetState().lastFailure or {}).text or "" end
 
 ------------------------------------------------------------------- scenarios
--- 1. Coordinates strategy (default): travel then turn-in stays on coordinates
-check("default strategy is coordinates", RXPW.db.strategy == "coordinates")
+-- 1. Explicit coordinates strategy: travel then turn-in stays on coordinates
+check("saved coordinates strategy is preserved", RXPW.db.strategy == "coordinates")
 local A = goto_(10, 10); newStep(1, A, header("Follow the road"))
 point(A); advance(1)
 check("travel waypoint synced as coordinates", wui.writes == 1 and mode() == "coordinates" and wui.nav.x == 0.1, wui.writes)

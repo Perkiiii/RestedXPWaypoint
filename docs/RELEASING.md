@@ -60,7 +60,11 @@ untracked required assets. Review and back up your changes independently.
 
 The TOC is the only authoritative version field. The README refers users to it;
 changelog headings record history and the test runner checks version syntax.
-Core reads installed addon metadata at runtime.
+Core reads installed addon metadata at runtime; the settings menu, help and
+status all use it. The Lua test runner also supplies the TOC version to its mock
+metadata, so tests need no separate version edit. After changing the TOC, fully
+exit and restart WoW so the client rereads addon metadata; do not rely on
+`/reload` to refresh a TOC version.
 
 ## What the tool validates
 

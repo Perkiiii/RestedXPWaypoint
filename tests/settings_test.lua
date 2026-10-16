@@ -93,7 +93,7 @@ do
     table.concat(titles, "|"))
   check("header shows name, subtitle, version and dependency status", P.header.title:GetText() == "RestedXP Waypoint"
     and P.header.subtitle:GetText() == "RestedXP navigation, powered by Waypoint UI."
-    and P.header.version:GetText() == "v0.6.1" and P.header.status[1].label:GetText() == "RestedXP: detected"
+    and P.header.version:GetText() == "v" .. ADDON_VERSION and P.header.status[1].label:GetText() == "RestedXP: detected"
     and P.header.status[2].label:GetText() == "Waypoint UI: detected" and P.header.status[3].label:GetText() == "Sync: running")
   local logo, version = P.header.logo, P.header.version
   local vp, lp = version.points[1] or {}, logo.points[1] or {}
@@ -102,6 +102,16 @@ do
     and logo:GetWidth() == 80 and logo:GetHeight() == 80 and lp[1] == "TOPRIGHT" and lp[3] == "TOPRIGHT"
     and vp[1] == "TOP" and vp[2] == logo and vp[3] == "BOTTOM")
   check("content is laid out for one vertical page", P.GetContentHeight() > 600)
+  H.versions.RestedXPWaypoint = "98.76.54"
+  P.canvas:Hide()
+  H.slash("config")
+  check("reopening settings reads the installed version instead of a fixed label",
+    P.header.version:GetText() == "v98.76.54")
+  H.versions.RestedXPWaypoint = ADDON_VERSION
+  P.canvas:Hide()
+  H.slash("config")
+  check("settings restores the TOC version from addon metadata",
+    P.header.version:GetText() == "v" .. ADDON_VERSION)
   local content = c.autoSync:GetParent():GetParent()
   check("one uniform background: no section cards or row hover shading", #content.regions == 0
     and c.autoSync:GetParent().highlight == nil and c.questIcons:GetParent().highlight == nil)
@@ -196,7 +206,7 @@ do
     local picked = choose(c.strategy, value)
     check("strategy dropdown selects " .. value, picked and RXPWDB.strategy == value
       and c.strategy.value == value and c.strategy.text:GetText() == ({ coordinates = "RestedXP Coordinates",
-        hybrid = "Hybrid", ["native-first"] = "Native First" })[value]
+        hybrid = "Hybrid (Recommended)", ["native-first"] = "Native First" })[value]
       and P.strategyRow.frame.desc:GetText():find(value == "hybrid" and "eligible turn-ins"
         or value == "native-first" and "Prefer native" or "exact waypoint", 1, true) ~= nil)
     H.slash("status")
@@ -243,8 +253,9 @@ do
   profile.disableArrow = true -- changed in RestedXP's own settings page
   P.canvas:Hide(); P.canvas:Show()
   check("a change made in RestedXP's settings shows on reopening", c.hideArrow:GetChecked() == true)
+  c.hideArrow:Click()
   c.restore:Click(); H.acceptPopup("RESTEDXPWAYPOINT_RESTORE_DEFAULTS")
-  check("Restore Defaults leaves RestedXP's arrow option alone", profile.disableArrow == true and c.hideArrow:GetChecked())
+  check("Restore Defaults enables Hide RestedXP Arrow", profile.disableArrow == true and c.hideArrow:GetChecked())
 end
 
 --------------------------------------------------------------------------------
@@ -435,7 +446,8 @@ do
   check("/rxpw debug updates the panel", RXPWDB.debug == false and not c.debug:GetChecked())
   local before = #H.chat
   c.status:Click()
-  check("Print Status runs the status report", #H.chat > before and H.lastChat("status %(v0%.6%.1%)") ~= nil)
+  local versionPattern = ADDON_VERSION:gsub("%.", "%%.")
+  check("Print Status runs the status report", #H.chat > before and H.lastChat("status %(v" .. versionPattern .. "%)") ~= nil)
   c.inspect:Click()
   check("Inspect Current Step runs the inspection", H.lastChat("inspect %(strategy coordinates%)") ~= nil)
 
@@ -447,10 +459,10 @@ do
   check("Restore Defaults asks for confirmation first", H.popups[#H.popups] == "RESTEDXPWAYPOINT_RESTORE_DEFAULTS"
     and RXPWDB.strategy == "hybrid" and RXPWDB.debug == true)
   H.acceptPopup("RESTEDXPWAYPOINT_RESTORE_DEFAULTS"); H.advance(3)
-  check("Restore Defaults resets only RestedXP Waypoint's settings", RXPWDB.strategy == "coordinates"
+  check("Restore Defaults resets menu settings and preserves unrelated saved data", RXPWDB.strategy == "hybrid"
     and RXPWDB.debug == false and RXPWDB.questIcons and RXPWDB.serviceIcons and RXPWDB.customColors
     and RXPWDB.autoSync and RXPWDB.unrelated == "keep me")
-  check("controls show the restored values", c.strategy.value == "coordinates" and not c.debug:GetChecked()
+  check("controls show the restored values", c.strategy.value == "hybrid" and not c.debug:GetChecked()
     and c.questIcons:GetChecked() and c.customColors:GetChecked())
   check("Restore Defaults keeps the manual pin", H.wui.nav == marker and opsAfter(H, at, "bridge") == 0)
 end
@@ -459,18 +471,57 @@ end
 do
   local H = fresh()
   StaticPopup_Show = nil
-  local R = H.load(ADDON_ROOT, { strategy = "hybrid" })
+  local R = H.load(ADDON_ROOT, { strategy = "coordinates" })
   R.SettingsPanel.Open()
   local b = R.SettingsPanel.controls.restore
   b:Click()
-  local waited = RXPWDB.strategy == "hybrid" and b.text:GetText() == "Click again to confirm"
+  local waited = RXPWDB.strategy == "coordinates" and b.text:GetText() == "Click again to confirm"
   b:Click()
-  check("fallback confirmation needs a second click", waited and RXPWDB.strategy == "coordinates")
+  check("fallback confirmation needs a second click", waited and RXPWDB.strategy == "hybrid")
 end
 
 --------------------------------------------------------------------------------
 -- Saved settings compatibility
 --------------------------------------------------------------------------------
+do
+  local H = fresh()
+  local R = H.load(ADDON_ROOT)
+  R.SettingsPanel.Open()
+  local strategy = R.SettingsPanel.controls.strategy
+  check("new installations default to recommended Hybrid", RXPWDB.strategy == "hybrid"
+    and R.Config.GetDefault("strategy") == "hybrid" and strategy.value == "hybrid"
+    and strategy.text:GetText() == "Hybrid (Recommended)")
+  local c = R.SettingsPanel.controls
+  check("new installations have debug off and every other checkbox on",
+    not c.debug:GetChecked() and c.autoSync:GetChecked() and c.hideArrow:GetChecked()
+    and c.questIcons:GetChecked() and c.serviceIcons:GetChecked() and c.customColors:GetChecked()
+    and RXPWDB.arrowDefaultPending == nil)
+  R.RXP.SetArrowHidden(false)
+  local saved = RXPWDB
+  local returning = fresh()
+  local loaded = returning.load(ADDON_ROOT, saved)
+  check("returning installations keep their visible RestedXP arrow", loaded.RXP.IsArrowHidden() == false
+    and returning.rxp.updateMap == 0)
+  for _, value in ipairs({ "coordinates", "hybrid", "native-first" }) do
+    local savedH = fresh()
+    savedH.load(ADDON_ROOT, { strategy = value })
+    check("existing " .. value .. " choice survives the Hybrid default", RXPWDB.strategy == value)
+  end
+end
+
+do
+  local H = fresh()
+  H.aceAddons.RXPGuides = nil
+  local R = H.load(ADDON_ROOT)
+  check("missing RestedXP defers the new-install arrow default safely",
+    R.RXP.IsArrowHidden() == nil and RXPWDB.arrowDefaultPending == true)
+  local saved = RXPWDB
+  local nextLogin = fresh()
+  local loaded = nextLogin.load(ADDON_ROOT, saved)
+  check("deferred arrow default applies once RestedXP is available",
+    loaded.RXP.IsArrowHidden() == true and RXPWDB.arrowDefaultPending == nil)
+end
+
 do
   local saved = { autoSync = false, debug = true, strategy = "hybrid", unrelated = 7 }
   local H, R = start(saved)
@@ -479,7 +530,7 @@ do
     and saved.questIcons == true and saved.serviceIcons == true and saved.customColors == true)
   local bad = { strategy = "warp", questIcons = "yes", customColors = 0 }
   start(bad)
-  check("invalid saved values fall back to defaults", bad.strategy == "coordinates" and bad.questIcons == true
+  check("invalid saved values fall back to defaults", bad.strategy == "hybrid" and bad.questIcons == true
     and bad.customColors == true)
   local H3, R3 = start({ strategy = "hybrid" })
   check("Config rejects invalid values without touching the store", R3.Config.Set("strategy", "warp") == false

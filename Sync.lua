@@ -219,6 +219,22 @@ local function ClearHandledNative()
     state.handledAnchor = nil
 end
 
+-- Display-only observers (the settings page's connection status). Called when
+-- running/paused changes: from Start/Stop and the existing ticker, never from
+-- a new timer. Observers must not write navigation.
+local statusListeners, statusSignature = {}, nil
+
+function Sync.RegisterStatusListener(fn)
+    if type(fn) == "function" then statusListeners[#statusListeners + 1] = fn end
+end
+
+local function NotifyStatus()
+    local signature = (state.ticker and "running" or "stopped") .. (state.manualOverride and ":paused" or "")
+    if signature == statusSignature then return end
+    statusSignature = signature
+    for _, fn in ipairs(statusListeners) do pcall(fn) end
+end
+
 function Sync.GetState()
     local active
     if state.handledMode == "native" then
@@ -465,7 +481,7 @@ local function Apply(target, how, labelOnly)
     ObserveAudioStep(target)
     -- suppressAudio only controls MapPin's creation sound. Marker intro audio
     -- is independent in Waypoint UI 1.7.3 and has no public per-write control.
-    local suppressAudio = labelOnly or not state.audioPending or WUI.IsShowingTarget(target)
+    local suppressAudio = RXPW.db.stepSound == false or labelOnly or not state.audioPending or WUI.IsShowingTarget(target)
     state.desiredPresentation = target
     state.generation = state.generation + 1
     state.pendingNative = nil
@@ -1285,6 +1301,7 @@ end
 
 local function Tick()
     ObserveManualOverride(GetTime())
+    NotifyStatus()
     if RXP.HasTargetChanged() then
         state.pendingSince = GetTime()
         if state.questTransitionUntil then
@@ -1420,6 +1437,7 @@ function Sync.Start()
 
     state.ticker = C_Timer.NewTicker(POLL_INTERVAL, Tick)
     RXPW.Debug("Automatic sync started (strategy: %s).", RXPW.db.strategy)
+    NotifyStatus()
     return true
 end
 
@@ -1439,6 +1457,7 @@ function Sync.Stop()
     end
     state.pendingSince = nil
     state.questTransitionUntil, state.questTransitionManual = nil, nil
+    NotifyStatus()
 end
 
 -- Called after the strategy setting changed: re-evaluate the current

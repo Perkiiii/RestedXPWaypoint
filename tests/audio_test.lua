@@ -163,5 +163,18 @@ do
   check("cleared manual waypoint resumes the fresh step silently", audible(H) == 0 and H.navAt(80))
   R.Sync.Stop()
 end
+do
+  local H, R = setup()
+  local writes = H.wui.writes
+  R.Config.Set("stepSound", false)
+  check("sound toggle itself adds no write", H.wui.writes == writes)
+  H.step(2, 60); H.advance(2)
+  check("disabled new-step creation sound stays quiet", audible(H) == 0 and H.navAt(60))
+  R.Config.Set("stepSound", true); H.advance(2)
+  check("reenabling never replays consumed sound", audible(H) == 0)
+  H.step(3, 80); H.advance(2)
+  check("future genuine step sounds once after reenable", audible(H) == 1 and H.navAt(80))
+  R.Sync.Stop()
+end
 print(string.format("%d passed, %d failed", passes, fails))
 assert(fails == 0, "audio regressions failed")

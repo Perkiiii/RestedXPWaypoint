@@ -2,7 +2,8 @@
 -- Core: shared helpers, saved settings, initialisation and slash commands.
 -- Load order (see .toc): Core.lua, LabelResolver.lua, RXPAdapter.lua,
 -- NavigationResolver.lua, WaypointAdapter.lua, Sync.lua, Preview.lua,
--- SettingsPanel.lua
+-- SettingsSchema.lua, WaypointSettingsAdapter.lua, SettingsWidgets.lua,
+-- SettingsTabs.lua, SettingsPanel.lua
 
 local addonName, RXPW = ...
 
@@ -47,9 +48,10 @@ local DEFAULTS = {
     questIcons = true,
     serviceIcons = true,
     customColors = true,
+    stepSound = true,
 }
 -- Restore order: presentation first, sync last (it starts evaluating).
-local SETTING_ORDER = { "questIcons", "serviceIcons", "customColors", "debug", "strategy", "autoSync" }
+local SETTING_ORDER = { "questIcons", "serviceIcons", "customColors", "stepSound", "debug", "strategy", "autoSync" }
 
 -- Replaced by the saved table on ADDON_LOADED.
 RXPW.db = {}
@@ -60,7 +62,7 @@ local function LoadSettings()
     if type(db) ~= "table" then
         -- One-time default for the external arrow option. Keep it pending if
         -- RestedXP is unavailable; never overwrite a returning user's choice.
-        db = { arrowDefaultPending = true }
+        db = { arrowDefaultPending = true, mapPinsDefaultPending = true }
         _G.RXPWDB = db
     end
     for key, value in pairs(DEFAULTS) do
@@ -388,6 +390,16 @@ end
 local Config = {}
 RXPW.Config = Config
 Config.STRATEGIES = { "coordinates", "hybrid", "native-first" }
+-- Settings page order and names. Only the labels are new: saved values and
+-- /rxpw mode keep the ids, and each strategy's behaviour is unchanged.
+Config.STRATEGY_OPTIONS = {
+    { value = "hybrid", label = "Hybrid (Recommended)",
+        description = "Uses Blizzard quest waypoints where appropriate, while following RestedXP coordinates for travel and other guide instructions." },
+    { value = "coordinates", label = "RestedXP Coordinates",
+        description = "Always follows RestedXP's coordinates for navigation." },
+    { value = "native-first", label = "Blizzard Waypoints",
+        description = "Prioritizes Blizzard's native quest navigation when available, falling back to RestedXP coordinates when necessary." },
+}
 
 local listeners = {}
 
@@ -450,6 +462,7 @@ local APPLY = {
     questIcons = ApplyAppearance,
     serviceIcons = ApplyAppearance,
     customColors = ApplyAppearance,
+    stepSound = function() end, -- read at the next existing navigation write; no synthetic audio
 }
 
 -- Saves and applies a setting. Returns true when the value was valid.
@@ -596,6 +609,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1)
 
     -- All non-load-on-demand addons are loaded by PLAYER_LOGIN.
     ApplyArrowDefault()
+    if RXPW.WaypointSettings then RXPW.WaypointSettings.ApplyFirstRunDefault() end
     local rxp = RXPW.RXP.GetStatus()
     local wui = RXPW.WUI.GetStatus()
 

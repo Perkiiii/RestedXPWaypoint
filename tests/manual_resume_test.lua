@@ -344,5 +344,21 @@ do
   check("waypoint to linked quest during transition remains external", H.st.quest == 101 and H.st.setQuestCalls == 1
     and not H.RXPW.Sync.GetState().pending and H.wui.writes == 1)
 end
+do
+  local H = setup()
+  local R = H.RXPW
+  local provider = dofile(ADDON_ROOT .. "/tests/settings_provider.lua")(R)
+  WaypointUIAPI.Settings = provider
+  R.SettingsPanel.Open(); R.SettingsPanel.SelectTab("Waypoint")
+  provider.Set("RightClickToClear", false)
+  R.SettingsPanel.controls.RightClickToClear:Click()
+  local writes = H.wui.writes
+  -- Right-click calls ClearDestination: user navigation plus native tracking.
+  WaypointUIAPI.Navigation.ClearUserNavigation()
+  C_SuperTrack.ClearAllSuperTracked()
+  H.fire("QUEST_LOG_UPDATE"); H.advance(5)
+  R.SettingsPanel.canvas:Hide(); R.SettingsPanel.Open(); H.advance(2)
+  check("right-click clear shared setting does not recreate bridge marker", H.wui.nav == nil and H.wui.writes == writes)
+end
 print(string.format("%d passed, %d failed", passes, fails))
 assert(fails == 0, "manual resume regressions failed")

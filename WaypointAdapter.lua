@@ -308,6 +308,14 @@ function WUI.ResolveAppearance(presentation)
     return icon, iconName, tint, tintName
 end
 
+-- The settings page draws Waypoint UI 1.7.x's own settings artwork, read from
+-- the installed addon by file path (never bundled); other versions get the
+-- page's flat colours, since the texture layout may differ.
+function WUI.HasVerifiedArt()
+    local version = RXPW.GetVersion(WUI_ADDON)
+    return RXPW.IsLoaded(WUI_ADDON) and type(version) == "string" and version:find(VERIFIED_ICON_VERSION) ~= nil
+end
+
 function WUI.GetQuestIcon(status, iconType)
     local version = RXPW.GetVersion(WUI_ADDON)
     if type(version) ~= "string" or not version:find(VERIFIED_ICON_VERSION) then return nil end

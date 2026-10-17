@@ -9,9 +9,14 @@ Waypoint UI. Neither dependency addon is bundled.
 | DefaultWaypoint | Drawn by the project's default-waypoint tool from geometry based on the logo. |
 | Service glyphs (Bags, trainers, flight master, food, repair, innkeeper, stable, grind) | Project tools describe conversion of supplied source icons, including WoW minimap tracking icons. Complete original source attribution and redistribution terms are not recorded in this checkout. |
 | QuestAvailable, QuestComplete | Tint-ready derivatives of Waypoint UI's AvailableQuest and CompleteQuest artwork, retaining their alpha/shape. |
+| StatusCheck, StatusCross, StatusPause, StatusWarning | Original vector drawings by `tools/draw_status_icons.py` (settings page connection status); no source images. |
 
 Other quest glyphs are referenced from the separately installed Waypoint UI;
-they are not copied into this package.
+they are not copied into this package. The settings page likewise draws Waypoint
+UI 1.7.x's settings artwork (`Art/Settings/TabButton`, `Widget-Container`,
+`Widget-Background` and `packages/uic-common/resources/common`) by file path from
+the installed Waypoint UI at runtime; none of it is bundled. Without a verified
+Waypoint UI 1.7.x the page uses flat colours instead.
 
 This inventory is attribution evidence, not a grant of redistribution rights.
 The maintainer must confirm permissions and required notices before public

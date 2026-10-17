@@ -27,34 +27,60 @@ C_Timer = {
     return ticker
   end,
 }
--- Widget mock (v0.6.0 settings page): enough state to build and drive the
--- panel offline (sizes, shown state, scripts, text, textures, slider/scroll
--- values). Unknown methods are no-ops; this proves no rendering or layout.
+-- Widget mock (settings page). Besides state (sizes, shown state, scripts,
+-- text, textures, slider/scroll values) it resolves anchors into rectangles,
+-- clips scroll children, orders frames by strata/level/creation and hit-tests
+-- the cursor, so H.ui.click() delivers a click to whatever frame is really on
+-- top at that point, like the client. It still proves no pixels: fonts are
+-- approximated (0.5 x size per character) and textures are not drawn.
 local frames = {}
 local Widget = {}
+local creation = 0
+local MOUSE_DEFAULT = { Button = true, CheckButton = true, Slider = true, EditBox = true }
 local function newWidget(kind, parent)
+  creation = creation + 1
   local w = setmetatable({ kind = kind, shown = true, width = 0, height = 0, alpha = 1, enabled = true,
-    scripts = {}, hooks = {}, points = {}, children = {}, regions = {}, parent = parent, level = 1 }, Widget)
+    scripts = {}, hooks = {}, points = {}, children = {}, regions = {}, parent = parent, level = 1,
+    order = creation, mouse = MOUSE_DEFAULT[kind] or false }, Widget)
   if parent and parent.children then table.insert(parent.children, w); w.level = (parent.level or 0) + 1 end
   return w
 end
 Widget.__index = Widget
 -- Methods whose effect the tests do not observe.
-for _, name in ipairs({ "SetFontObject", "SetJustifyH", "SetJustifyV", "SetWordWrap", "SetFont", "SetShadowOffset",
-  "SetShadowColor", "SetRotation", "SetFrameStrata", "SetToplevel", "EnableMouse", "EnableMouseWheel",
-  "SetOrientation", "SetThumbTexture", "SetValueStep", "SetObeyStepOnDrag", "SetClipsChildren", "SetOwner",
-  "AddLine", "SetDrawLayer", "SetBlendMode" }) do
+for _, name in ipairs({ "SetJustifyH", "SetJustifyV", "SetWordWrap", "SetShadowOffset",
+  "SetShadowColor", "SetRotation", "SetToplevel", "EnableMouseWheel", "SetSnapToPixelGrid", "SetTexelSnappingBias",
+  "SetAutoFocus", "ClearFocus", "SetTextInsets", "SetOrientation", "SetValueStep", "SetObeyStepOnDrag", "SetOwner",
+  "AddLine", "SetDrawLayer", "SetBlendMode", "SetScale", "SetGradient", "SetMaxLetters", "SetNumeric" }) do
   Widget[name] = function() end
 end
+function Widget:SetFont(_, size) self.fontSize = size end
+function Widget:SetFontObject(font) self.font = font end
+function Widget:EnableMouse(v) self.mouse = v and true or false end
+function Widget:IsMouseEnabled() return self.mouse end
+function Widget:SetFrameStrata(s) self.strata = s end
+function Widget:GetFrameStrata() local w = self while w do if w.strata then return w.strata end w = w.parent end return "MEDIUM" end
+function Widget:SetClipsChildren(v) self.clips = v and true or false end
+function Widget:SetThumbTexture(t) self.thumb = t end
+function Widget:SetTexCoord(...) self.texCoord = { ... } end
+function Widget:SetTextureSliceMargins(...) self.sliceMargins = { ... } end
+function Widget:SetTextureSliceMode(m) self.sliceMode = m end
 function Widget:SetSize(w, h) self.width, self.height = w, h end
 function Widget:SetWidth(w) self.width = w; if self.scripts.OnSizeChanged then self.scripts.OnSizeChanged(self, w, self.height) end end
 function Widget:SetHeight(h) self.height = h end
-function Widget:GetWidth() return self.width end
-function Widget:GetHeight() return self.height end
 function Widget:SetPoint(...) table.insert(self.points, { ... }) end
 function Widget:ClearAllPoints() self.points = {} end
 function Widget:SetAllPoints(other) self.points = { { "ALL", other } }; if other and other.width then self.width, self.height = other.width, other.height end end
-function Widget:SetParent(p) self.parent = p end
+local function Relevel(w, level)
+  w.level = level
+  for _, c in ipairs(w.children) do Relevel(c, level + 1) end
+end
+function Widget:SetParent(p)
+  if self.parent and self.parent.children then
+    for i, c in ipairs(self.parent.children) do if c == self then table.remove(self.parent.children, i) break end end
+  end
+  self.parent = p
+  if p and p.children then table.insert(p.children, self); Relevel(self, (p.level or 0) + 1) end
+end
 function Widget:GetParent() return self.parent end
 function Widget:IsShown() return self.shown end
 function Widget:IsVisible()
@@ -79,31 +105,29 @@ function Widget:HookScript(name, fn)
 end
 function Widget:RegisterEvent(e) self.events = self.events or {}; self.events[e] = true end
 function Widget:UnregisterEvent(e) if self.events then self.events[e] = nil end end
-function Widget:IsMouseOver() return self.mouseOver or false end
 function Widget:GetFrameLevel() return self.level end
-function Widget:SetFrameLevel(l) self.level = l end
+function Widget:SetFrameLevel(l) Relevel(self, l) end
 function Widget:CreateTexture() local t = newWidget("Texture", self); table.insert(self.regions, t); return t end
 function Widget:CreateFontString() local t = newWidget("FontString", self); table.insert(self.regions, t); return t end
 function Widget:SetTexture(path) self.texture = path end
 function Widget:GetTexture() return self.texture end
 function Widget:SetColorTexture(r, g, b, a) self.color = { r, g, b, a } end
-function Widget:SetVertexColor(r, g, b) self.vertex = { r, g, b } end
+function Widget:SetVertexColor(r, g, b, a) self.vertex = { r, g, b, a } end
 function Widget:SetText(t) self.text = t end
 function Widget:GetText() return self.text end
 function Widget:SetTextColor(r, g, b, a) self.textColor = { r, g, b, a } end
-function Widget:GetStringWidth() return #(tostring(self.text or "")) * 6 end
-function Widget:GetStringHeight()
-  local width = self.width > 0 and self.width or 300
-  return math.max(1, math.ceil(#(tostring(self.text or "")) * 6 / width)) * 13
-end
+local function FontSize(w) return (w.font and w.font.fontSize) or w.fontSize or 12 end
+function Widget:GetStringWidth() return #(tostring(self.text or "")) * FontSize(self) * 0.5 end
+function Widget:GetUnboundedStringWidth() return self:GetStringWidth() end
 function Widget:SetMinMaxValues(lo, hi) self.min, self.max = lo, hi end
 function Widget:GetMinMaxValues() return self.min or 0, self.max or 0 end
 function Widget:SetValue(v)
   v = math.max(self.min or 0, math.min(self.max or v, v))
-  if v ~= self.value then self.value = v; if self.scripts.OnValueChanged then self.scripts.OnValueChanged(self, v) end end
+  if v ~= self.value then self.value = v; if self.scripts.OnValueChanged then self.scripts.OnValueChanged(self, v, true) end end
 end
 function Widget:GetValue() return self.value or 0 end
-function Widget:SetScrollChild(c) self.scrollChild = c end
+function Widget:GetValueStep() return self.step or 1 end
+function Widget:SetScrollChild(c) self.scrollChild = c; c.scrollParent = self end
 function Widget:SetVerticalScroll(v) self.scroll = v end
 function Widget:GetVerticalScroll() return self.scroll or 0 end
 function Widget:Click() if self.enabled and self.scripts.OnClick then self.scripts.OnClick(self, "LeftButton") end end
@@ -116,6 +140,202 @@ function CreateFont(name)
   local font = setmetatable({ name = name }, Widget)
   _G[name] = font
   return font
+end
+
+-- Geometry. Rectangles are { l, b, r, t } in canvas units, y up (as in WoW).
+-- A frame with no anchors and no parent sits at the origin; any other frame
+-- without anchors is not laid out (the client does not draw it either).
+local Geometry = {}
+local resolving = {}
+local function Edge(rect, point)
+  local x = point:find("LEFT") and rect[1] or point:find("RIGHT") and rect[3] or (rect[1] + rect[3]) / 2
+  local y = point:find("TOP") and rect[4] or point:find("BOTTOM") and rect[2] or (rect[2] + rect[4]) / 2
+  return x, y
+end
+-- Rectangles are cached until anything that affects geometry changes.
+local geomVersion, rectCache = 0, setmetatable({}, { __mode = "k" })
+for _, name in ipairs({ "SetPoint", "ClearAllPoints", "SetAllPoints", "SetSize", "SetWidth", "SetHeight",
+  "SetParent", "SetVerticalScroll", "SetScrollChild", "SetText", "SetFont", "SetFontObject" }) do
+  local original = Widget[name]
+  Widget[name] = function(...) geomVersion = geomVersion + 1; return original(...) end
+end
+local RectUncached
+function Geometry.Rect(w)
+  local cached = rectCache[w]
+  if cached and cached.version == geomVersion then return cached.rect end
+  local rect = RectUncached(w)
+  rectCache[w] = { version = geomVersion, rect = rect }
+  return rect
+end
+function RectUncached(w)
+  if resolving[w] then return nil end
+  if w.scrollParent then -- scroll child: TOPLEFT follows the scroll frame and its offset
+    local s = Geometry.Rect(w.scrollParent)
+    if not s then return nil end
+    local top = s[4] + (w.scrollParent.scroll or 0)
+    return { s[1], top - w.height, s[1] + w.width, top }
+  end
+  if #w.points == 0 then
+    if w.kind == "FontString" and w.parent then return nil end
+    if not w.parent or w.parent == UIParent then return { 0, 0, w.width, w.height } end
+    return nil
+  end
+  resolving[w] = true
+  local fix = {}
+  local ok = true
+  for _, p in ipairs(w.points) do
+    if p[1] == "ALL" then
+      local r = Geometry.Rect(p[2] or w.parent)
+      if not r then ok = false break end
+      fix.l, fix.b, fix.r, fix.t = r[1], r[2], r[3], r[4]
+    else
+      local point, rel, relPoint, x, y = p[1], p[2], p[3], p[4], p[5]
+      if type(rel) == "number" then rel, relPoint, x, y = nil, point, rel, relPoint
+      elseif type(relPoint) == "number" then relPoint, x, y = point, relPoint, x end
+      if type(rel) == "string" then rel = _G[rel] end
+      rel = rel or w.parent
+      local r = rel and Geometry.Rect(rel)
+      if not r then ok = false break end
+      local ax, ay = Edge(r, relPoint or point)
+      ax, ay = ax + (x or 0), ay + (y or 0)
+      if point:find("LEFT") then fix.l = ax elseif point:find("RIGHT") then fix.r = ax else fix.cx = ax end
+      if point:find("TOP") then fix.t = ay elseif point:find("BOTTOM") then fix.b = ay else fix.cy = ay end
+    end
+  end
+  resolving[w] = nil
+  if not ok then return nil end
+  local width = w.width
+  local height = w.height
+  if w.kind == "FontString" and width == 0 then width = w:GetStringWidth() end
+  local l, r, b, t = fix.l, fix.r, fix.b, fix.t
+  if l and not r then r = l + width elseif r and not l then l = r - width
+  elseif not l then l = (fix.cx or 0) - width / 2; r = l + width end
+  if w.kind == "FontString" and height == 0 then height = Geometry.StringHeight(w, r - l) end
+  if b and not t then t = b + height elseif t and not b then b = t - height
+  elseif not b then b = (fix.cy or 0) - height / 2; t = b + height end
+  return { l, b, r, t }
+end
+function Widget:GetWidth()
+  local r = #self.points > 0 and Geometry.Rect(self)
+  return r and (r[3] - r[1]) or self.width
+end
+function Widget:GetHeight()
+  local r = #self.points > 0 and Geometry.Rect(self)
+  return r and (r[4] - r[2]) or self.height
+end
+function Widget:GetStringHeight() return Geometry.StringHeight(self, self:GetWidth()) end
+function Geometry.StringHeight(self, width)
+  if not width or width <= 0 then width = 300 end
+  local lines = 0
+  for line in (tostring(self.text or "") .. "\n"):gmatch("([^\n]*)\n") do
+    lines = lines + math.max(1, math.ceil(#line * FontSize(self) * 0.5 / width))
+  end
+  return math.max(1, lines) * math.floor(FontSize(self) * 1.1 + 0.5)
+end
+function Widget:GetLeft() local r = Geometry.Rect(self) return r and r[1] end
+function Widget:GetRight() local r = Geometry.Rect(self) return r and r[3] end
+function Widget:GetTop() local r = Geometry.Rect(self) return r and r[4] end
+function Widget:GetBottom() local r = Geometry.Rect(self) return r and r[2] end
+function Widget:GetCenter() local r = Geometry.Rect(self) if r then return (r[1] + r[3]) / 2, (r[2] + r[4]) / 2 end end
+
+local STRATA = { BACKGROUND = 1, LOW = 2, MEDIUM = 3, HIGH = 4, DIALOG = 5, FULLSCREEN = 6,
+  FULLSCREEN_DIALOG = 7, TOOLTIP = 8 }
+-- Visible part of a frame after every clipping ancestor (scroll frames clip).
+function Geometry.Visible(w)
+  if not w:IsVisible() then return nil end
+  local r = Geometry.Rect(w)
+  if not r then return nil end
+  local p = w.parent
+  while p do
+    if p.kind == "ScrollFrame" or p.clips then
+      local c = Geometry.Rect(p)
+      if not c then return nil end
+      r = { math.max(r[1], c[1]), math.max(r[2], c[2]), math.min(r[3], c[3]), math.min(r[4], c[4]) }
+      if r[1] >= r[3] or r[2] >= r[4] then return nil end
+    end
+    p = p.parent
+  end
+  return r
+end
+local function Above(a, b)
+  local sa, sb = STRATA[a:GetFrameStrata()] or 3, STRATA[b:GetFrameStrata()] or 3
+  if sa ~= sb then return sa > sb end
+  if a.level ~= b.level then return a.level > b.level end
+  return a.order > b.order
+end
+H.ui = { cursor = nil }
+function H.ui.rect(w) return Geometry.Rect(w) end
+function H.ui.visibleRect(w) return Geometry.Visible(w) end
+-- True when the frame is shown, laid out and not entirely clipped away.
+function H.ui.rendered(w) return Geometry.Visible(w) ~= nil end
+function H.ui.hit(x, y)
+  local best
+  for _, f in ipairs(frames) do
+    if f.mouse and f.alpha > 0 then
+      local r = Geometry.Visible(f)
+      if r and x >= r[1] and x <= r[3] and y >= r[2] and y <= r[4] and (not best or Above(f, best)) then best = f end
+    end
+  end
+  return best
+end
+local hovered
+function H.ui.moveTo(x, y)
+  H.ui.cursor = { x, y }
+  local target = H.ui.hit(x, y)
+  if target ~= hovered then
+    local old = hovered
+    hovered = target
+    if old and old.scripts.OnLeave then old.scripts.OnLeave(old) end
+    if target and target.scripts.OnEnter then target.scripts.OnEnter(target) end
+  end
+  return target
+end
+-- Point inside the visible part of a frame (its centre unless given offsets).
+function H.ui.pointOf(w, fx, fy)
+  local r = Geometry.Visible(w)
+  if not r then return nil end
+  return r[1] + (r[3] - r[1]) * (fx or 0.5), r[2] + (r[4] - r[2]) * (fy or 0.5)
+end
+-- A real click at a frame's centre: the frame that receives it is whichever is
+-- on top there. Returns the receiving frame (nil when nothing takes the mouse).
+function H.ui.click(w, fx, fy)
+  local x, y = H.ui.pointOf(w, fx, fy)
+  if not x then return nil end
+  local target = H.ui.moveTo(x, y)
+  H.fire("GLOBAL_MOUSE_DOWN", "LeftButton")
+  if not target then return nil end
+  if target.scripts.OnMouseDown then target.scripts.OnMouseDown(target, "LeftButton") end
+  if target.enabled and (target.kind == "Button" or target.kind == "CheckButton") and target.scripts.OnClick then
+    target.scripts.OnClick(target, "LeftButton", true)
+  end
+  if target.scripts.OnMouseUp then target.scripts.OnMouseUp(target, "LeftButton") end
+  return target
+end
+function H.ui.wheel(w, delta)
+  local x, y = H.ui.pointOf(w)
+  if not x then return nil end
+  local p = H.ui.hit(x, y)
+  while p and not p.scripts.OnMouseWheel do p = p.parent end
+  if p then p.scripts.OnMouseWheel(p, delta) end
+  return p
+end
+function Widget:IsMouseOver()
+  if self.mouseOver ~= nil then return self.mouseOver end
+  local c = H.ui.cursor
+  if not c then return false end
+  local r = Geometry.Visible(self)
+  return r ~= nil and c[1] >= r[1] and c[1] <= r[3] and c[2] >= r[2] and c[2] <= r[4]
+end
+-- Runs OnUpdate scripts (only used for short-lived animations) for `seconds`.
+function H.ui.update(seconds, step)
+  step = step or 1 / 60
+  local t = 0
+  while t < seconds do
+    for _, f in ipairs(frames) do
+      if f.scripts.OnUpdate and f:IsVisible() then f.scripts.OnUpdate(f, step) end
+    end
+    t = t + step
+  end
 end
 GameFontNormal = setmetatable({ GetFont = function() return "Fonts\\FRIZQT__.TTF", 12, "" end }, Widget)
 GameFontHighlight = setmetatable({}, Widget)
@@ -150,7 +370,8 @@ DEFAULT_CHAT_FRAME = { AddMessage = function(_, m) table.insert(H.chat, m) end }
 SlashCmdList = {}
 -- The runner supplies the actual TOC version, just as WoW supplies metadata.
 H.versions = { RestedXPWaypoint = assert(ADDON_VERSION, "Runner must provide the TOC version"), WaypointUI = "1.7.3" }
-C_AddOns = { IsAddOnLoaded = function() return true end, GetAddOnMetadata = function(a) return H.versions[a] or "x" end }
+-- Every addon is loaded except the optional ones that change behaviour.
+C_AddOns = { IsAddOnLoaded = function(a) return a ~= "ElvUI" and a ~= "MapPinEnhanced" end, GetAddOnMetadata = function(a) return H.versions[a] or "x" end }
 C_Map = { GetMapInfo = function(id) return { name = "Map" .. id } end, CanSetUserWaypointOnMap = function() return true end }
 
 local st = { quest = nil, user = false, setQuestCalls = 0 }
@@ -377,7 +598,7 @@ function H.usespell(id) return { tag = "usespell", text = "-", spellId = id } en
 ----------------------------------------------------------------------- load + drive
 function H.load(root, savedVariables)
   H.RXPW = {}
-  for _, f in ipairs({ "Core.lua", "LabelResolver.lua", "RXPAdapter.lua", "NavigationResolver.lua", "WaypointAdapter.lua", "Sync.lua", "Preview.lua", "SettingsPanel.lua" }) do
+  for _, f in ipairs({ "Core.lua", "LabelResolver.lua", "RXPAdapter.lua", "NavigationResolver.lua", "WaypointAdapter.lua", "Sync.lua", "Preview.lua", "SettingsSchema.lua", "WaypointSettingsAdapter.lua", "SettingsWidgets.lua", "SettingsTabs.lua", "SettingsPanel.lua" }) do
     assert(loadfile(root .. "/" .. f))("RestedXPWaypoint", H.RXPW)
   end
   RXPWDB = savedVariables

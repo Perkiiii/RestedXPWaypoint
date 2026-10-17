@@ -1,0 +1,222 @@
+diff --git a/API.lua b/API.lua
+index cbacd32..f93783d 100644
+--- a/API.lua
++++ b/API.lua
+@@ -50,3 +50,171 @@ do -- @\\Settings
+     WaypointUIAPI_OpenSettingsUI = Setting.OpenSettingsUI
+     WaypointUIAPI.OpenSettingsUI = Setting.OpenSettingsUI
+ end
++
++
++-- Optional public preference API, version 1. Only explicitly listed scalar
++-- preferences are exposed. The settings schema remains the source of truth.
++do
++    local Config = env.Config
++    local SavedVariables = env.modules:Import("packages\\saved-variables")
++    local CallbackRegistry = env.modules:Import("packages\\callback-registry")
++    local Schema = env.modules:Await("@\\Settings\\Schema")
++    local WidgetType = env.modules:Import("@\\Settings\\Enum").WidgetType
++    local allow = {
++        WaypointSystemType = true,
++        AlwaysShow = true,
++        RightClickToClear = true,
++        BackgroundPreview = true,
++        DistanceThresholdPinpoint = true,
++        DistanceThresholdHidden = true,
++        WaypointDistanceTextType = true,
++        PinpointInfo = true,
++        PinpointInfoExtended = true,
++        PinpointAllowInQuestArea = true,
++        NavigatorShow = true,
++        ContextIconAppearance = true,
++        WaypointScale = true,
++        WaypointUseWorldScale = true,
++        WaypointScaleMin = true,
++        WaypointScaleMax = true,
++        WaypointAlpha = true,
++        WaypointBeam = true,
++        WaypointBeamAlpha = true,
++        WaypointDistanceTextFontFlags = true,
++        WaypointDistanceText = true,
++        WaypointDistanceTextScale = true,
++        WaypointDistanceTextAlpha = true,
++        WaypointDistanceSubtextAlpha = true,
++        PinpointScale = true,
++        PinpointAlpha = true,
++        PinpointShowContextIcon = true,
++        PinpointFontFlags = true,
++        PinpointTextAlignment = true,
++        NavigatorShowContextIcon = true,
++        NavigatorShowArrow = true,
++        NavigatorScale = true,
++        NavigatorArrowScale = true,
++        NavigatorAlpha = true,
++        NavigatorDistance = true,
++        NavigatorDynamicDistance = true,
++        CustomMapPinsEnabled = true,
++        AutoTrackPlacedPinEnabled = true,
++        AutoTrackChatLinkPinEnabled = true,
++        GuidePinAssistantEnabled = true,
++        AudioGlobal = true,
++        AudioProximity = true,
++        AudioProximityDistance = true,
++        AudioProximitySound = true,
++        AudioProximityLeavingDistance = true,
++        AudioProximityLeavingSound = true,
++        AudioCustom = true,
++        AudioCustomShowWaypoint = true,
++        AudioCustomShowPinpoint = true,
++        AudioCustomNewUserNavigation = true,
++        PrefMetric = true,
++    }
++    local entries, listeners = {}, {}
++    local function resolve(value)
++        if type(value) == "function" then return value() end
++        return value
++    end
++    local function visit(nodes, parents)
++        for _, node in ipairs(nodes) do
++            local path = {}
++            for i, parent in ipairs(parents) do path[i] = parent end
++            path[#path + 1] = node
++            if allow[node.key] then entries[node.key] = { node = node, path = path } end
++            if node.children then visit(node.children, path) end
++        end
++    end
++    visit(Schema.SCHEMA, {})
++    local API = { version = 1 }
++    local function finite(value)
++        return type(value) == "number" and value == value and math.abs(value) ~= math.huge
++    end
++    local function available(key)
++        return type(key) == "string" and allow[key] and entries[key] and Config.DBGlobal
++    end
++    function API.Get(key)
++        if not available(key) then return nil, "Unsupported setting or database not ready" end
++        return Config.DBGlobal:GetVariable(key)
++    end
++    function API.IsExplicit(key)
++        if not available(key) then return nil, "Unsupported setting or database not ready" end
++        -- Defaults are fallback values, not materialized in the saved table.
++        return type(WaypointDB_Global) == "table" and rawget(WaypointDB_Global, key) ~= nil
++    end
++    function API.Describe(key)
++        if not available(key) then return nil, "Unsupported setting or database not ready" end
++        local entry, result = entries[key], { visible = true, enabled = true }
++        local node = entry.node
++        result.default = Config.DBGlobal.defaultValues[key]
++        for _, parent in ipairs(entry.path) do
++            if parent.showWhen and not parent.showWhen() then result.visible = false end
++            if parent.disableWhen and parent.disableWhen() then result.enabled = false end
++        end
++        if node.widgetType == WidgetType.CheckButton then result.type = "boolean"
++        elseif node.widgetType == WidgetType.Range then
++            result.type = "number"
++            result.min = resolve(node.widgetRange_min)
++            result.max = resolve(node.widgetRange_max)
++            result.step = resolve(node.widgetRange_step)
++        elseif node.widgetType == WidgetType.SelectionMenu then
++            result.type, result.options = "select", {}
++            for index, label in ipairs(resolve(node.widgetSelectionMenu_data)) do
++                result.options[index] = { value = index, label = label }
++            end
++        elseif node.widgetType == WidgetType.Input and key:match("^Audio") then result.type = "sound"
++        else return nil, "Unsupported control type" end
++        return result
++    end
++    function API.Format(key, value)
++        if not available(key) then return nil end
++        local node = entries[key].node
++        if node.widgetRange_textFormattingFunc then return tostring(node.widgetRange_textFormattingFunc(value)) end
++        if node.widgetRange_textFormatting then return string.format(node.widgetRange_textFormatting, tostring(value)) end
++        return tostring(value)
++    end
++    function API.Set(key, value)
++        local d, reason = API.Describe(key)
++        if not d then return false, reason end
++        local valid = d.type == "boolean" and type(value) == "boolean"
++        if d.type == "number" then
++            valid = finite(value) and value >= d.min and value <= d.max
++            if valid then
++                local steps = (value - d.min) / d.step
++                valid = math.abs(steps - math.floor(steps + 0.5)) < 0.00001 or value == d.max
++            end
++        elseif d.type == "select" then
++            valid = finite(value) and value == math.floor(value) and d.options[value] ~= nil
++        elseif d.type == "sound" then
++            valid = value == "" or (finite(value) and value >= 0 and value == math.floor(value))
++        end
++        if not valid then return false, "Invalid preference value" end
++        if API.Get(key) == value then return true end
++        Config.DBGlobal:SetVariable(key, value)
++        -- This is the same UI invalidation used by Waypoint UI's own controls.
++        CallbackRegistry.Trigger("Setting.Refresh", true)
++        return true
++    end
++    function API.OnChange(key, callback)
++        if (key ~= "*" and not available(key)) or type(callback) ~= "function" then
++            return nil, "Unsupported subscription"
++        end
++        local token = { key = key, callback = callback }
++        listeners[token] = true
++        return function() listeners[token] = nil end
++    end
++    for key in pairs(entries) do
++        local settingKey = key
++        SavedVariables.OnChange("WaypointDB_Global", settingKey, function(_, value)
++            -- Read effective state; registry arguments are intentionally not part of this API.
++            for token in pairs(listeners) do
++                if token.key == "*" or token.key == settingKey then
++                    pcall(token.callback, settingKey, API.Get(settingKey))
++                end
++            end
++        end)
++    end
++    WaypointUIAPI.Settings = API
++end
+diff --git a/SETTINGS_API.md b/SETTINGS_API.md
+new file mode 100644
+--- /dev/null
++++ b/SETTINGS_API.md
+@@ -0,0 +1,41 @@
++# Proposed public Settings API v1
++
++Development proposal; not part of standard 1.7.3. No public version change.
++Implemented in API.lua, with an explicit allowlist of scalar preferences.
++No arbitrary database keys or tables are exposed.
++
++- `Settings.version == 1`: contract version, independent of addon version.
++- `Get(key)`: effective preference, including fallback defaults; nil and reason
++  for unknown keys or an unready database.
++- `Describe(key)`: fresh detached descriptor: type, default, visible, enabled;
++  numeric min/max/step; selection options `{value, label}`. Schema ancestor
++  conditions and dynamic client/unit bounds are evaluated at call time.
++- `Format(key, value)`: uses the settings schema's own text formatter.
++- `Set(key, value)`: true on success, including unchanged values; false and
++  reason on invalid/unknown values. Validates booleans, finite numeric bounds and
++  steps, selection indices and sound IDs (nonnegative integer or blank mute).
++  Uses DBGlobal:SetVariable so normal runtime callbacks run, then invalidates
++  native settings widgets through their normal Setting.Refresh event. It does
++  not invoke widget-specific setters that also write to the database.
++- `OnChange(key, callback)`: one key or `"*"`; returns an unsubscribe function.
++  Callback signature `(key, effectiveValue)`. One internal subscription per
++  allowed key; consumer subscriptions are removable. Consumer exceptions cannot
++  interrupt runtime updates. No polling. Reread dependent descriptors after any
++  notification, including PrefMetric or mode changes.
++- `IsExplicit(key)`: whether the saved table has an own value. Explicit false
++  stays distinct from absent. Nil and reason if unavailable.
++
++Consumers should read fresh on opening, deduplicate writes and respect hidden or
++disabled descriptors. Describe never returns internal schema tables or closures.
++Set validates independently of visibility, permitting programmatic configuration
++of a currently hidden setting.
++
++Global Wipe still requires ReloadUI through the existing native reset path.
++Normal individual changes use SavedVariables.OnChange. The API does not infer
++user intent or override MapPinEnhanced compatibility. It exposes preferences,
++not a promise that a competing renderer is active.
++
++Validation from the companion repository:
++`node tests/run-waypoint-api.js <this-checkout>` executes the actual schema,
++defaults, saved-variable handler, registry and API in fengari. It cannot verify
++rendered widgets, actual sound playback or WoW Forever runtime behavior.

@@ -6,8 +6,8 @@ UI's in-world navigation. It is not affiliated with either project.
 
 See `RestedXPWaypoint_Camelot.toc` or `/rxpw status` for the installed version,
 and [CHANGELOG.md](CHANGELOG.md) for release notes. Hybrid is the recommended default
-for new installations; existing settings are preserved. Native First remains
-experimental.
+for new installations; existing settings are preserved. Blizzard Waypoints
+(`native-first`) remains experimental.
 
 ## Requirements and installation
 
@@ -39,11 +39,14 @@ installing or changing TOC/module files; `/reload` is sufficient for Lua edits.
 
 ## Navigation strategies
 
-| `/rxpw mode ...` | Behaviour |
-|---|---|
-| `coordinates` | Always follow RestedXP's actual coordinates. Quest/service context changes presentation only. |
-| `hybrid` (recommended, default) | Use native quest tracking for eligible ready turn-ins; preserve intermediate and explicit travel points. |
-| `native-first` | Also allow eligible `.complete` quest objectives, with structural and quest-log checks plus native destination verification. |
+The settings page lists them in this order; `/rxpw mode` and saved settings use
+the identifiers.
+
+| Settings name | `/rxpw mode ...` | Behaviour |
+|---|---|---|
+| Hybrid (Recommended), default | `hybrid` | Use native quest tracking for eligible ready turn-ins; preserve intermediate and explicit travel points. |
+| RestedXP Coordinates | `coordinates` | Always follow RestedXP's actual coordinates. Quest/service context changes presentation only. |
+| Blizzard Waypoints | `native-first` | Also allow eligible `.complete` quest objectives, with structural and quest-log checks plus native destination verification; falls back to RestedXP coordinates. |
 
 Native tracking is selected only when RestedXP's instruction structure supports
 it. Routes, cave entrances, unrelated actions and ambiguous objectives stay on
@@ -90,36 +93,30 @@ private custom quest palettes are not copied.
 ## Settings and previews
 
 Open **Options > AddOns > RestedXP Waypoint**, or `/rxpw config` (also `settings`
-and `options`). One scrolling page contains General, Navigation, Waypoint
-Appearance, Waypoint Preview and Advanced sections.
+and `options`). A vertical sidebar contains **General, Waypoint, Appearance,
+Map, Audio and About**, with separate scroll positions.
 
-- Automatic sync, strategy and debug controls share the same settings as slash
-  commands. Changes from either side refresh an open page.
-- Quest Icons, Service Icons and Custom Colours default to on. These affect the
-  custom waypoints this addon creates; native quest markers use Waypoint UI's own
-  presentation. Turning Quest or Service Icons off shows Waypoint UI's generic
-  icon for those destinations; the default icon on other waypoints is not
-  affected by these settings. Size, beams, animation and sound remain Waypoint
-  UI settings.
-- Bridge navigation allows the new-navigation sound once per new RestedXP
-  progression step; login, restoration and updates within that step stay quiet.
-  Waypoint UI's independent marker-intro sounds can still repeat.
-  For less repetitive audio, enable Waypoint UI's Audio > Customize > Use Custom
-  Sound, then Mute "When Waypoint is shown..." and "When Pinpoint is shown...".
-  Keep "When commencing /way navigation..." enabled if desired. These preferences
-  also affect Waypoint UI markers outside this addon.
-- Hide RestedXP Arrow mirrors RestedXP's own profile option. Its waypoint data
-  continues updating. It is enabled for new installations and by Restore Defaults;
-  the value itself is saved in RestedXP's profile. Existing choices are preserved
-  during normal startup.
-- Preview selection, Close/Far, Show, Next, All and Stop use the same preview
-  session as `/rxpw preview`. A preview pauses automatic sync; stopping resumes
-  it if it was previously running and auto-sync is still enabled.
-- Advanced provides Status, Inspect and confirmed Restore Defaults. Defaults
-  restore this addon's settings, including Hybrid and auto-sync on, so
-  automatic navigation can resume or change. Hide RestedXP Arrow is also enabled;
-  other dependency settings are untouched. Debug defaults to off; all other
-  checkboxes on this page default to on.
+General controls synchronization, strategy and RestedXP's own Hide Arrow option.
+Appearance retains quest/service icons and custom colours. Audio adds **Play Sound
+on New RestedXP Step**, enabled by default; it controls the bridge's existing
+creation sound opportunity. Marker appearance and proximity sounds remain separate.
+
+Shared controls require the **proposed Waypoint UI Settings API v1**. Standard
+Waypoint UI 1.7.3 has no such API: these controls are disabled with an explanation
+and a button to open Waypoint UI settings. With the development API, both menus
+use the same preferences and changes apply immediately. No Waypoint UI preferences
+are copied into `RXPWDB`. The patch is excluded from addon packages and has not
+been accepted upstream.
+
+On new RestedXP Waypoint installations, the API can enable Waypoint UI map pins
+once when the preference is genuinely unset. Explicit false is preserved. Without
+reliable API support, no external preference is changed.
+
+About provides version, credits, Status, Inspect and confirmed Restore Defaults.
+Defaults affect RestedXP Waypoint preferences and RestedXP's arrow; Waypoint UI
+preferences remain intact. Existing saved choices survive updates. Development
+previews remain available through `/rxpw preview`; `/rxpw preview off` removes
+a preview and resumes prior synchronization.
 
 Settings persist in `RXPWDB` across reload/restart. Preview selection is temporary.
 The page cannot be opened during combat.

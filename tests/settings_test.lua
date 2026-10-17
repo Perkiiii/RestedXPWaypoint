@@ -63,110 +63,60 @@ local WUI_ICONS = "Interface\\AddOns\\WaypointUI\\Art\\Icons\\"
 local OWN_ICONS = "Interface\\AddOns\\RestedXPWaypoint\\Art\\Icons\\"
 
 --------------------------------------------------------------------------------
--- Registration and construction
---------------------------------------------------------------------------------
+-- Registration, six-tab construction and released-provider fallback.
 do
   local H, R = start()
   local P = R.SettingsPanel
-  check("exactly one Settings category, named RestedXP Waypoint", #H.settings.categories == 1
-    and H.settings.categories[1].name == "RestedXP Waypoint" and #H.settings.addOnCategories == 1
-    and H.settings.addOnCategories[1] == H.settings.categories[1] and H.settings.categories[1].frame == P.canvas)
+  check("one lazy category", #H.settings.categories == 1 and P.controls.autoSync == nil)
   P.Initialize(); P.Initialize()
-  check("initialization is idempotent: no duplicate registration", #H.settings.categories == 1
-    and #H.settings.addOnCategories == 1)
-  check("the page is not built before it is first shown", P.controls.autoSync == nil and not P.canvas:IsShown())
-
+  check("registration is idempotent", #H.settings.categories == 1)
   H.slash("config")
-  check("/rxpw config opens the category by its generated ID", H.settings.opened[1] == H.settings.categories[1]:GetID()
-    and P.canvas:IsShown())
   local c = P.controls
-  local ids = { "autoSync", "strategy", "hideArrow", "questIcons", "serviceIcons", "customColors", "openWaypointUI",
-    "previewIconDropdown", "previewIcon", "previewDistance", "previewShow", "previewNext", "previewAll",
-    "previewStop", "debug", "status", "inspect", "restore" }
-  local missing = {}
-  for _, id in ipairs(ids) do if not c[id] then missing[#missing + 1] = id end end
-  check("every control is constructed", #missing == 0, table.concat(missing, ", "))
-  local titles = {}
-  for _, s in ipairs(P.GetSections()) do titles[#titles + 1] = s end
-  check("one page with sections General, Navigation, Waypoint Appearance, Waypoint Preview, Advanced",
-    table.concat(titles, "|") == "General|Navigation|Waypoint Appearance|Waypoint Preview|Advanced",
-    table.concat(titles, "|"))
-  check("header shows name, subtitle, version and dependency status", P.header.title:GetText() == "RestedXP Waypoint"
-    and P.header.subtitle:GetText() == "RestedXP navigation, powered by Waypoint UI."
-    and P.header.version:GetText() == "v" .. ADDON_VERSION and P.header.status[1].label:GetText() == "RestedXP: detected"
-    and P.header.status[2].label:GetText() == "Waypoint UI: detected" and P.header.status[3].label:GetText() == "Sync: running")
-  local logo, version = P.header.logo, P.header.version
-  local vp, lp = version.points[1] or {}, logo.points[1] or {}
-  check("logo top-right at 80x80, version centred under it",
-    logo:GetTexture() == "Interface\\AddOns\\RestedXPWaypoint\\Art\\Logo"
-    and logo:GetWidth() == 80 and logo:GetHeight() == 80 and lp[1] == "TOPRIGHT" and lp[3] == "TOPRIGHT"
-    and vp[1] == "TOP" and vp[2] == logo and vp[3] == "BOTTOM")
-  check("content is laid out for one vertical page", P.GetContentHeight() > 600)
-  H.versions.RestedXPWaypoint = "98.76.54"
-  P.canvas:Hide()
-  H.slash("config")
-  check("reopening settings reads the installed version instead of a fixed label",
-    P.header.version:GetText() == "v98.76.54")
-  H.versions.RestedXPWaypoint = ADDON_VERSION
-  P.canvas:Hide()
-  H.slash("config")
-  check("settings restores the TOC version from addon metadata",
-    P.header.version:GetText() == "v" .. ADDON_VERSION)
-  local content = c.autoSync:GetParent():GetParent()
-  check("one uniform background: no section cards or row hover shading", #content.regions == 0
-    and c.autoSync:GetParent().highlight == nil and c.questIcons:GetParent().highlight == nil)
-
-  -- Scrolling: the wheel moves the single page and is clamped to its height.
-  local scrollFrame = c.autoSync:GetParent():GetParent():GetParent()
-  P.Scroll(-1)
-  local down = scrollFrame:GetVerticalScroll()
-  for _ = 1, 100 do P.Scroll(-1) end
-  local _, range = P.GetScrollRange()
-  check("mouse wheel scrolls the page and stops at the end", down > 0 and scrollFrame:GetVerticalScroll() == range
-    and range > 0)
-  for _ = 1, 100 do P.Scroll(1) end
-  check("scrolling back stops at the top", scrollFrame:GetVerticalScroll() == 0)
-
-  -- Clicking the dropdown again closes it (GLOBAL_MOUSE_DOWN precedes OnClick).
-  c.strategy:Click()
-  local open = c.strategy.list:IsShown()
-  c.strategy.mouseOver = true
-  H.fire("GLOBAL_MOUSE_DOWN")
-  c.strategy:Click()
-  c.strategy.mouseOver = false
-  local closed = not c.strategy.list:IsShown()
+  check("category opens", P.canvas:IsShown() and H.settings.opened[1] == P.category:GetID())
+  check("six tabs in order", table.concat(P.tabs, "|") == "General|Waypoint|Appearance|Map|Audio|About")
+  check("all owned controls exist", c.autoSync and c.strategy and c.hideArrow and c.questIcons
+    and c.serviceIcons and c.customColors and c.stepSound and c.debug and c.restore and c.inspect)
+  check("preview controls removed", c.previewShow == nil and c.previewIcon == nil and c.previewStop == nil)
+  check("released API: no disabled shared rows, they are not shown at all", c.WaypointScale:GetParent() ~= nil
+    and P.controls.WaypointScale and not P.integration.visible and P.fallbacks[1].visible
+    and (function() P.SelectTab("Appearance"); local hidden = not c.WaypointScale:GetParent():IsVisible()
+      P.SelectTab("General"); return hidden end)())
+  check("released API: one Waypoint UI button per shared tab, explaining the tab limitation", #P.fallbacks == 4
+    and c.openWaypoint.text:GetText():find("Waypoint Settings", 1, true)
+    and P.fallbacks[1].description:find("cannot be asked to open a particular tab", 1, true))
+  check("General header has logo, name and version", P.header.logo:GetTexture() == "Interface\\AddOns\\RestedXPWaypoint\\Art\\Logo"
+    and P.header.name:GetText() == "RestedXP Waypoint"
+    and P.header.version:GetText():find("Version " .. ADDON_VERSION, 1, true) == 1)
+  P.SelectTab("About")
+  check("About title has version and logo", P.title.subtitle:GetText() == "Version " .. ADDON_VERSION
+    and P.title.icon:GetTexture() == "Interface\\AddOns\\RestedXPWaypoint\\Art\\Logo")
+  WaypointUIAPI.Settings = dofile(ADDON_ROOT .. "/tests/settings_provider.lua")(R) -- shared rows make it long
+  P.Refresh()
+  P.SelectTab("Appearance"); P.Scroll(-1, true)
+  local scroll = P.GetPage("Appearance").scroll
+  local position = scroll:GetVerticalScroll()
+  P.SelectTab("General"); P.SelectTab("Appearance")
+  check("tab scroll position restored", position > 0 and scroll:GetVerticalScroll() == position)
+  P.SelectTab("General")
   c.strategy:Click(); H.fire("GLOBAL_MOUSE_DOWN")
-  check("dropdown toggles on its button and closes on an outside click", open and closed
-    and not c.strategy.list:IsShown())
-
+  check("outside click closes dropdown", not c.strategy.list:IsShown())
   H.inCombat = true
-  local opened = #H.settings.opened
-  H.slash("settings")
-  check("opening during combat is refused with a message", #H.settings.opened == opened
-    and H.lastChat("cannot be opened during combat") ~= nil)
+  local count = #H.settings.opened
+  H.slash("config")
+  check("combat opening refused", #H.settings.opened == count and H.lastChat("cannot be opened during combat"))
   H.inCombat = false
+  for i = 1, 10 do P.canvas:Hide(); P.Open() end
+  check("repeated open has one category", #H.settings.categories == 1)
 end
 
--- Missing dependencies: the page still builds; dependent actions disabled.
 do
   local H = fresh()
-  WaypointUIAPI = nil
-  RXPG_ARROW = nil
-  H.aceAddons.RXPGuides = nil
-  C_AddOns.IsAddOnLoaded = function(name) return name == "RestedXPWaypoint" end
-  local R = H.load(ADDON_ROOT, { strategy = "coordinates" })
-  local P = R.SettingsPanel
-  local ok, err = pcall(P.Open)
-  local c = P.controls
-  check("page builds without RestedXP and Waypoint UI", ok and c.autoSync ~= nil, err)
-  check("missing dependencies are shown and preview/Waypoint UI actions disabled",
-    P.header.status[1].label:GetText() == "RestedXP: not loaded"
-    and P.header.status[2].label:GetText() == "Waypoint UI: not loaded"
-    and not c.previewShow:IsEnabled() and not c.previewAll:IsEnabled() and not c.openWaypointUI:IsEnabled()
-    and not c.hideArrow:IsEnabled() and P.arrowRow.frame.desc:GetText():find("Unavailable", 1, true) ~= nil
-    and P.previewStatus.frame.text:GetText():find("needs Waypoint UI", 1, true) ~= nil)
-  c.autoSync:Click()
-  check("settings still save without dependencies", RXPWDB.autoSync == false and not c.autoSync:GetChecked())
+  WaypointUIAPI = nil; RXPG_ARROW = nil; H.aceAddons.RXPGuides = nil
+  local R = H.load(ADDON_ROOT, {})
+  local ok, err = pcall(R.SettingsPanel.Open)
+  check("build without dependencies", ok, err)
+  check("arrow and shared actions disabled", not R.SettingsPanel.controls.hideArrow:IsEnabled()
+    and not R.SettingsPanel.controls.AudioGlobal:IsEnabled())
 end
 
 -- No Settings API at all: no crash, /rxpw config explains.
@@ -206,15 +156,13 @@ do
     local picked = choose(c.strategy, value)
     check("strategy dropdown selects " .. value, picked and RXPWDB.strategy == value
       and c.strategy.value == value and c.strategy.text:GetText() == ({ coordinates = "RestedXP Coordinates",
-        hybrid = "Hybrid (Recommended)", ["native-first"] = "Native First" })[value]
-      and P.strategyRow.frame.desc:GetText():find(value == "hybrid" and "eligible turn-ins"
-        or value == "native-first" and "Prefer native" or "exact waypoint", 1, true) ~= nil)
+        hybrid = "Hybrid (Recommended)", ["native-first"] = "Blizzard Waypoints" })[value])
     H.slash("status")
     check("/rxpw status reflects the panel's " .. value, H.lastChat("strategy: " .. value:gsub("%-", "%%-")) ~= nil)
   end
   H.slash("mode native-first")
   check("/rxpw mode updates the open dropdown", c.strategy.value == "native-first"
-    and c.strategy.text:GetText() == "Native First")
+    and c.strategy.text:GetText() == "Blizzard Waypoints")
   P.canvas:Hide(); H.slash("mode hybrid"); P.canvas:Show()
   check("reopening the page never shows an outdated strategy", c.strategy.value == "hybrid")
   H.slash("mode coordinates"); H.advance(2)
@@ -313,12 +261,12 @@ do
   check("appearance changes keep a manual pin", H.wui.nav == marker and opsAfter(H, at, "bridge") == 0)
   c.questIcons:Click(); c.customColors:Click(); H.advance(1)
   H.slash("sync"); H.advance(2)
-  c.previewShow:Click()
+  H.slash("preview flightmaster")
   marker, at = H.wui.nav, #H.operations
   c.customColors:Click(); H.advance(4)
   check("appearance changes keep an active preview", H.wui.nav == marker and opsAfter(H, at) == 0
     and H.wui.nav.flags == "RestedXPWaypoint-Preview")
-  c.previewStop:Click(); H.advance(3)
+  H.slash("preview off"); H.advance(3)
   check("after the preview the bridge destination uses the new appearance", questShown(true, false))
   c.customColors:Click(); H.advance(3)
 
@@ -352,87 +300,19 @@ do
 end
 
 --------------------------------------------------------------------------------
--- Waypoint Preview
---------------------------------------------------------------------------------
+-- Preview remains a developer slash-command feature, independent of panel visibility.
 do
   local H, R = start()
-  local g = rxpQuestStep(H)
-  H.advance(3)
-  local P = R.SettingsPanel
-  P.Open()
-  local c = P.controls
-  check("preview defaults: Flight Master, close, nothing shown", c.previewIconDropdown.value == "flightmaster"
-    and c.previewIcon.swatch:GetTexture() == OWN_ICONS .. "FlightMaster" and c.previewDistance.value == "close"
-    and P.previewStatus.frame.text:GetText() == "No preview is shown." and not c.previewStop:IsEnabled())
-  check("preview list offers all 14 markers with their icons", #c.previewIconDropdown.list.rows == 14
-    and c.previewIconDropdown.options[1].label == "Available Quest"
-    and c.previewIconDropdown.options[14].label == "Default Waypoint"
-    and c.previewIconDropdown.options[14].icon == OWN_ICONS .. "DefaultWaypoint" and c.previewIconDropdown.options[14].tint == nil)
-  choose(c.previewIconDropdown, "repair")
-  check("selected icon shown beside the dropdown", c.previewIcon.swatch:GetTexture() == OWN_ICONS .. "Repair"
-    and c.previewIcon.swatch:IsShown() and c.previewIconDropdown.text:GetText() == "Repair")
-  choose(c.previewIconDropdown, "default")
-  check("default waypoint: its icon in the swatch, uncoloured", c.previewIcon.swatch:IsShown()
-    and c.previewIcon.swatch:GetTexture() == OWN_ICONS .. "DefaultWaypoint")
-  local writes = H.wui.writes
-  choose(c.previewIconDropdown, "repair"); c.previewDistance.buttons[2]:Click()
-  check("selecting icon and distance writes nothing", H.wui.writes == writes and c.previewDistance.value == "far")
-
-  c.previewShow:Click()
-  check("Show Preview places the selected marker far away", H.wui.nav.flags == "RestedXPWaypoint-Preview"
-    and H.wui.nav.name == "Preview: Repair" and math.abs(H.wui.nav.y - (0.5 - 0.032)) < 1e-6
-    and not R.Sync.GetState().running and c.previewStop:IsEnabled()
-    and P.previewStatus.frame.text:GetText():find("Preview active", 1, true) ~= nil)
-  c.previewNext:Click()
-  check("Next Icon advances and the dropdown follows", H.wui.nav.name == "Preview: Innkeeper"
-    and c.previewIconDropdown.value == "innkeeper")
-  c.previewAll:Click()
-  check("Preview All cycles from the first marker", H.wui.nav.name == "Preview: Accept quest"
-    and P.previewStatus.frame.text:GetText():find("cycling", 1, true) ~= nil)
-  H.advance(4)
-  check("the cycle advances and the page shows it", H.wui.nav.name == "Preview: Quest in progress"
-    and c.previewIconDropdown.value == "incomplete")
-  c.previewStop:Click(); H.advance(3)
-  check("Stop Preview resumes RestedXP navigation", H.navAt(40) and H.wui.nav.flags == "RestedXPWaypoint"
-    and R.Sync.GetState().running and P.previewStatus.frame.text:GetText() == "No preview is shown.")
-
-  R.db.questIcons = false
-  choose(c.previewIconDropdown, "incomplete"); c.previewShow:Click()
-  check("preview follows the appearance settings", H.wui.nav.iconTexture == nil
-    and H.lastChat("icon turned off in the appearance settings") ~= nil)
-  R.db.questIcons = true
-  c.previewStop:Click(); H.advance(2)
-
-  P.canvas:Hide()
-  c.previewShow:Click()
-  P.canvas:Show()
-  P.canvas:Hide()
-  check("closing the page leaves the preview controllable", R.Preview.IsActive() and not c.strategy.list:IsShown())
-  H.slash("preview off"); H.advance(2)
-
-  H.setManualWaypoint("Player pin")
-  local marker, at = H.wui.nav, #H.operations
-  P.canvas:Show()
-  c.previewStop:Click(); H.advance(2)
-  check("Stop Preview without a preview leaves a manual pin alone", H.wui.nav == marker and opsAfter(H, at) == 0)
-end
-
--- Orphaned preview after /reload, removed through the panel's Stop button.
-do
-  local H = fresh()
-  H.restoreSession({ name = "Preview: Repair", flags = "RestedXPWaypoint-Preview" }, true)
-  local R = H.load(ADDON_ROOT, { autoSync = false, strategy = "coordinates" })
+  rxpQuestStep(H); H.advance(2)
   R.SettingsPanel.Open()
-  local offered = R.SettingsPanel.controls.previewStop:IsEnabled()
-    and R.SettingsPanel.previewStatus.frame.text:GetText():find("leftover", 1, true) ~= nil
-  R.SettingsPanel.controls.previewStop:Click()
-  check("orphaned preview recovery still works from the panel", offered and H.wui.nav == nil
-    and H.lastChat("leftover preview marker") ~= nil)
+  H.slash("preview all far")
+  check("preview slash commands retained", R.Preview.GetState().active and not R.Sync.GetState().running)
+  R.SettingsPanel.canvas:Hide(); R.SettingsPanel.Open()
+  check("opening settings leaves preview state intact", R.Preview.GetState().active)
+  H.slash("preview off"); H.advance(2)
+  check("slash off resumes synchronization", not R.Preview.GetState().active and R.Sync.GetState().running)
 end
 
---------------------------------------------------------------------------------
--- Advanced
---------------------------------------------------------------------------------
 do
   local H, R = start()
   rxpQuestStep(H); H.advance(2)

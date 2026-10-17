@@ -10,6 +10,17 @@ historical release notes have not been reconstructed here.
 Record future changes here under Added, Changed, Fixed or Known Issues. Move them
 to a versioned section when preparing that version.
 
+## [0.6.3] - 2026-10-17
+
+### Changed
+
+- UI update: redesigned the in-game settings menu with General, Waypoint,
+  Appearance, Map, Audio and About tabs, refreshed controls and connection icons.
+- Shared Waypoint UI controls use its optional public settings API when available;
+  otherwise each shared tab offers a button to open Waypoint UI's settings.
+- Added a step-sound setting and kept existing saved preferences.
+- Updated the addon and in-game menu version to 0.6.3.
+
 ## [0.6.2] - Publication pending
 
 ### Changed

@@ -371,3 +371,43 @@ Destination creation failures still follow the original failed-key policy.
 `Label.LinkedBlock` is the shared same-step parent validation/block boundary
 helper used by both resolvers. Hybrid and native-first share meaningful own
 travel-text protection. In-game verification of Stage 3 remains pending.
+
+
+## Settings redesign (v0.6.3 UI update)
+
+The settings category now contains General, Waypoint, Appearance, Map, Audio and
+About tabs. SettingsPanel.lua owns registration/layout; SettingsWidgets.lua owns
+reusable widgets; SettingsTabs.lua owns tab contents; SettingsSchema.lua owns
+shared labels/groups/expected types. WaypointSettingsAdapter.lua is the dedicated
+exception to the old navigation-only integration boundary: it calls only the
+optional public WaypointUIAPI.Settings v1 contract, never private variables or UI.
+Standard Waypoint UI 1.7.3 has no settings API; shared controls are disabled there.
+The separate upstream proposal is integrations/waypoint-ui-settings-api.patch.
+
+Config owns the new stepSound boolean (default true). Sync only adds that flag
+to its existing creation-sound suppression condition; marker intros and proximity
+remain separate Waypoint UI audio paths. New bridge installs may record
+mapPinsDefaultPending; a public provider must positively establish an unset map
+preference before the one-time write. Existing false is preserved. Restore Defaults
+never initializes or resets shared preferences. Preview.lua and /rxpw preview
+remain; preview controls have been removed from the public page.
+
+Visual-parity revision: the page reproduces Waypoint UI 1.7's settings frame from
+its source values (212 px sidebar, one scroll page per tab shown by SelectTab,
+ContainerWithTitle/ElementBase rows, uic-common controls). Waypoint UI's settings
+textures are referenced by file path from the installed addon at runtime, never
+bundled, only when `WUI.HasVerifiedArt()` (loaded 1.7.x); otherwise flat colours.
+Without the public Settings API, shared rows are hidden and each shared tab shows
+one "Open Waypoint UI — <Tab> Settings" button (OpenSettingsUI cannot select a
+tab; never call the private OpenTabByIndex). Strategy labels and order live in
+`Config.STRATEGY_OPTIONS` (ids unchanged). Connection status uses
+`Sync.RegisterStatusListener` (display only; notified from Start/Stop and the
+existing ticker) and the original `Art/Icons/Status*` glyphs
+(`tools/draw_status_icons.py`). `tests/harness.lua` resolves anchors and hit-tests
+clicks (`H.ui.*`); `tests/settings_ui_test.lua` must keep clicking every tab.
+`node tests/run.js <name>` runs matching suites only.
+
+See docs/SETTINGS_REDESIGN.md for all 50 shared keys, defaults, constraints,
+integration limitations, tests and the pending in-game acceptance checklist.
+Additional offline provider validation against a separate development checkout:
+node tests/run-waypoint-api.js <Waypoint-UI-checkout>.

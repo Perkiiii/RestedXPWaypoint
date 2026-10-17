@@ -2,7 +2,7 @@
 ## Title: RestedXP Waypoint
 ## Notes: An unofficial companion addon that displays RestedXP navigation through Waypoint UI.
 ## Author: Independent contributors
-## Version: 0.6.2
+## Version: 0.6.3
 ## Category: Quests
 ## OptionalDeps: RXPGuides, WaypointUI
 ## SavedVariables: RXPWDB
@@ -14,4 +14,8 @@ NavigationResolver.lua
 WaypointAdapter.lua
 Sync.lua
 Preview.lua
+SettingsSchema.lua
+WaypointSettingsAdapter.lua
+SettingsWidgets.lua
+SettingsTabs.lua
 SettingsPanel.lua

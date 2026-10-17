@@ -4,7 +4,8 @@
 // Waypoint UI and WoW APIs; they do not prove in-game compatibility.
 //
 // Setup once:  npm install --prefix tests
-// Run:         node tests/run.js
+// Run:         node tests/run.js            (every suite)
+//              node tests/run.js settings   (suites whose name contains "settings")
 const fs = require('fs');
 const path = require('path');
 
@@ -23,7 +24,7 @@ const toc = fs.readFileSync(tocPath, 'utf8');
 const tocFiles = toc.split(/\r?\n/).filter((line) => line && !line.startsWith('#'));
 const expectedTocFiles = [
     'Core.lua', 'LabelResolver.lua', 'RXPAdapter.lua', 'NavigationResolver.lua',
-    'WaypointAdapter.lua', 'Sync.lua', 'Preview.lua', 'SettingsPanel.lua',
+    'WaypointAdapter.lua', 'Sync.lua', 'Preview.lua', 'SettingsSchema.lua', 'WaypointSettingsAdapter.lua', 'SettingsWidgets.lua', 'SettingsTabs.lua', 'SettingsPanel.lua',
 ];
 if (!/^## Interface: 16001$/m.test(toc)
     || !/^## Title: RestedXP Waypoint$/m.test(toc)
@@ -38,7 +39,8 @@ if (!/^## Interface: 16001$/m.test(toc)
 }
 console.log('== RestedXPWaypoint_Camelot.toc metadata and module order passed');
 const addonVersion = toc.match(/^## Version: (.+)$/m)[1].trim();
-const files = fs.readdirSync(__dirname).filter((f) => f.endsWith('_test.lua')).sort();
+const filter = process.argv[2];
+const files = fs.readdirSync(__dirname).filter((f) => f.endsWith('_test.lua') && (!filter || f.includes(filter))).sort();
 let failed = 0;
 
 for (const file of files) {

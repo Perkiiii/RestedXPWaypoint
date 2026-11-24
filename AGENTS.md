@@ -396,7 +396,9 @@ Visual-parity revision: the page reproduces Waypoint UI 1.7's settings frame fro
 its source values (212 px sidebar, one scroll page per tab shown by SelectTab,
 ContainerWithTitle/ElementBase rows, uic-common controls). Waypoint UI's settings
 textures are referenced by file path from the installed addon at runtime, never
-bundled, only when `WUI.HasVerifiedArt()` (loaded 1.7.x); otherwise flat colours.
+bundled, only for versions covered by `WUI.GetSettingsAtlasWidth()`. Waypoint UI
+1.7.0–1.7.3 use a 512×512 common atlas, and 1.7.4–1.7.5 use 1024×512.
+Unverified versions use flat colours.
 Without the public Settings API, shared rows are hidden and each shared tab shows
 one "Open Waypoint UI — <Tab> Settings" button (OpenSettingsUI cannot select a
 tab; never call the private OpenTabByIndex). Strategy labels and order live in

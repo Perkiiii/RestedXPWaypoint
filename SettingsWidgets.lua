@@ -2,7 +2,7 @@
 -- WoW frames. Dimensions, colours and texture regions follow Waypoint UI's
 -- Settings_Widgets.lua, Settings_Preload.lua and packages/uic-common. Its
 -- artwork is referenced from the separately installed Waypoint UI at runtime
--- (never copied or bundled); without a verified Waypoint UI 1.7.x the same
+-- (never copied or bundled); without a verified Waypoint UI version the same
 -- layout is drawn with flat colours. No Waypoint UI code or module is used.
 local addonName, RXPW = ...
 local W = {}
@@ -81,8 +81,8 @@ local function HideTooltip()
 end
 
 --------------------------------------------------------------------------------
--- Artwork: texture regions of the installed Waypoint UI (left, right, top,
--- bottom as fractions; slice margins left, right, top, bottom in texels).
+-- Artwork: texture regions (left, right, top, bottom) and slice margins
+-- (left, right, top, bottom) in pixels. The common atlas width varies by version.
 --------------------------------------------------------------------------------
 
 local TAB = "Interface\\AddOns\\WaypointUI\\Art\\Settings\\TabButton"
@@ -90,21 +90,19 @@ local CONTAINER = "Interface\\AddOns\\WaypointUI\\Art\\Settings\\Widget-Containe
 local WIDGET = "Interface\\AddOns\\WaypointUI\\Art\\Settings\\Widget-Background"
 local COMMON = "Interface\\AddOns\\WaypointUI\\packages\\uic-common\\resources\\common"
 
-local function Region(file, l, r, t, b, size, inset, scale)
-    return { file = file, coords = { l / size[1], r / size[1], t / size[2], b / size[2] },
-        inset = inset, scale = scale or 1 }
+local function Region(file, l, r, t, b, width, height, inset, scale)
+    return { file = file, coords = { l, r, t, b }, width = width, height = height, inset = inset, scale = scale or 1 }
 end
-local S256, S128, S512 = { 256, 128 }, { 128, 64 }, { 512, 512 }
-local function C(l, r, t, b, inset, scale) return Region(COMMON, l, r, t, b, S512, inset, scale) end
+local function C(l, r, t, b, inset, scale) return Region(COMMON, l, r, t, b, nil, 512, inset, scale) end
 
 local ART = {
-    TabHighlighted = Region(TAB, 0, 64, 0, 64, S256, 16, 0.6),
-    TabPushed = Region(TAB, 64, 128, 0, 64, S256, 16, 0.6),
-    TabSelected = Region(TAB, 0, 64, 64, 128, S256, 16, 0.6),
-    TabSelectedHighlighted = Region(TAB, 64, 128, 64, 128, S256, 16, 0.6),
-    TabSelectedPushed = Region(TAB, 128, 192, 64, 128, S256, 16, 0.6),
-    Container = Region(CONTAINER, 0, 64, 0, 64, S128, 18, 1),
-    Subcontainer = Region(CONTAINER, 64, 128, 0, 64, S128, 18, 1),
+    TabHighlighted = Region(TAB, 0, 64, 0, 64, 256, 128, 16, 0.6),
+    TabPushed = Region(TAB, 64, 128, 0, 64, 256, 128, 16, 0.6),
+    TabSelected = Region(TAB, 0, 64, 64, 128, 256, 128, 16, 0.6),
+    TabSelectedHighlighted = Region(TAB, 64, 128, 64, 128, 256, 128, 16, 0.6),
+    TabSelectedPushed = Region(TAB, 128, 192, 64, 128, 256, 128, 16, 0.6),
+    Container = Region(CONTAINER, 0, 64, 0, 64, 128, 64, 18, 1),
+    Subcontainer = Region(CONTAINER, 64, 128, 0, 64, 128, 64, 18, 1),
     Widget = { file = WIDGET, inset = 14, scale = 0.5 },
 
     Check = C(4, 51, 192, 239), CheckDisabled = C(98, 145, 192, 239),
@@ -160,21 +158,22 @@ for _, side in ipairs({ "StepLeft", "StepRight" }) do
     FLAT[side .. "Pushed"], FLAT[side .. "Disabled"] = { 0.5, 0.5, 0.5, 1 }, { 0.3, 0.3, 0.3, 1 }
 end
 
-local artAvailable
-function W.HasArt()
-    if artAvailable == nil then
-        artAvailable = RXPW.WUI ~= nil and RXPW.WUI.HasVerifiedArt() == true
+local commonAtlasWidth
+local function CommonAtlasWidth()
+    if commonAtlasWidth == nil then
+        commonAtlasWidth = RXPW.WUI and RXPW.WUI.GetSettingsAtlasWidth() or false
     end
-    return artAvailable
+    return commonAtlasWidth
 end
-function W.ResetArt() artAvailable = nil end
+function W.ResetArt() commonAtlasWidth = nil end
 
 -- Applies a named region to a texture; nil hides it (Waypoint UI's TEXTURE_NIL).
 local function Art(texture, name)
     texture.artName = name
     if not name then texture:Hide(); return end
     texture:Show()
-    local spec = W.HasArt() and ART[name]
+    local atlasWidth = CommonAtlasWidth()
+    local spec = atlasWidth and ART[name]
     if not spec then
         local c = FLAT[name] or { 0.3, 0.3, 0.3, 0.8 }
         texture:SetColorTexture(c[1], c[2], c[3], c[4])
@@ -198,7 +197,12 @@ local function Art(texture, name)
         end
     end
     local c = spec.coords
-    if c then texture:SetTexCoord(c[1], c[2], c[3], c[4]) else texture:SetTexCoord(0, 1, 0, 1) end
+    if c then
+        local width, height = spec.width or atlasWidth, spec.height
+        texture:SetTexCoord(c[1] / width, c[2] / width, c[3] / height, c[4] / height)
+    else
+        texture:SetTexCoord(0, 1, 0, 1)
+    end
 end
 W.Art = Art
 
@@ -300,7 +304,7 @@ function W.Checkbox(parent, onToggle)
         local enabled = self:IsEnabled()
         if self.checked then Art(self.texture, enabled and "Checked" or "CheckedDisabled")
         else Art(self.texture, enabled and "Check" or "CheckDisabled") end
-        self.check:SetShown(self.checked and not W.HasArt())
+        self.check:SetShown(self.checked and not CommonAtlasWidth())
         self.check:SetAlpha(enabled and 1 or 0.5)
     end)
     box:SetScript("OnClick", function(self)
@@ -380,7 +384,7 @@ local function UpdateRow(row)
     local state = GetState(row)
     local alpha = state == "PUSHED" and 0.175 or state == "HIGHLIGHTED" and 0.25 or 0
     row.background:SetVertexColor(125 / 255, 125 / 255, 125 / 255, alpha)
-    if not W.HasArt() then row.background:SetColorTexture(125 / 255, 125 / 255, 125 / 255, alpha) end
+    if not CommonAtlasWidth() then row.background:SetColorTexture(125 / 255, 125 / 255, 125 / 255, alpha) end
     if selected then row.text:SetTextColor(GOLD[1], GOLD[2], GOLD[3], 1)
     else row.text:SetTextColor(1, 1, 1, state == "NORMAL" and 0.75 or 1) end
     row.text:ClearAllPoints()
@@ -404,7 +408,7 @@ function W.Dropdown(parent, listParent, options, onSelect)
         Art(self.texture, not enabled and "GrayDisabled"
             or state == "NORMAL" and "Gray" or state == "HIGHLIGHTED" and "GrayHighlighted" or "GrayPushed")
         Art(self.arrow, "MenuArrow")
-        if not W.HasArt() then
+        if not CommonAtlasWidth() then
             self.arrow:SetTexture("Interface\\ChatFrame\\ChatFrameExpandArrow")
             if self.arrow.SetRotation then self.arrow:SetRotation(-math.pi / 2) end
         end

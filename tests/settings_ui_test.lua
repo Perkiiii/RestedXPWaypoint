@@ -188,6 +188,41 @@ do
 end
 
 --------------------------------------------------------------------------------
+-- Waypoint UI 1.7.4 widened the common atlas without moving these sprites.
+for _, version in ipairs({ "1.7.3", "1.7.4", "1.7.5" }) do
+  local H, R, P = load(nil, function(h) h.versions.WaypointUI = version end)
+  local width = version == "1.7.3" and 512 or 1024
+  local function crop(texture, l, r, t, b)
+    local uv = texture.texCoord
+    return uv and uv[1] == l / width and uv[2] == r / width
+      and uv[3] == t / 512 and uv[4] == b / 512
+  end
+  local box = P.controls.autoSync
+  check(version .. ": checked box crops a single sprite", crop(box.texture, 51, 98, 192, 239))
+  H.ui.click(box)
+  check(version .. ": unchecked box crops a single sprite", crop(box.texture, 4, 51, 192, 239))
+  box:SetEnabled(false)
+  check(version .. ": disabled unchecked box crops a single sprite", crop(box.texture, 98, 145, 192, 239))
+  box:SetChecked(true)
+  check(version .. ": disabled checked box crops a single sprite", crop(box.texture, 145, 192, 192, 239))
+  local dd = P.controls.strategy
+  check(version .. ": strategy button and arrow crop the common atlas",
+    crop(dd.texture, 7, 100, 7, 48) and crop(dd.arrow, 344, 370, 186, 212))
+  check(version .. ": dropdown menu and options crop the common atlas",
+    crop(dd.list.background, 192, 319, 98, 192) and crop(dd.list.rows[1].background, 401, 433, 102, 118))
+  check(version .. ": sidebar still uses its own texture dimensions",
+    P.tabButtons.General.background.texCoord[2] == 64 / 256)
+end
+do
+  local H, R, P = load(nil, function(h) h.versions.WaypointUI = "1.7.99" end)
+  local box = P.controls.autoSync
+  check("unverified Waypoint UI version uses the plain checkbox with a tick",
+    box.texture:GetTexture() == nil and box.texture.color ~= nil and box.check:IsShown())
+  check("unverified Waypoint UI version uses the plain dropdown button",
+    P.controls.strategy.texture:GetTexture() == nil and P.controls.strategy.texture.color ~= nil)
+end
+
+--------------------------------------------------------------------------------
 -- Navigation Strategy dropdown.
 do
   local H, R, P = load({ strategy = "hybrid" })

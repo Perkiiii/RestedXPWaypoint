@@ -308,12 +308,17 @@ function WUI.ResolveAppearance(presentation)
     return icon, iconName, tint, tintName
 end
 
--- The settings page draws Waypoint UI 1.7.x's own settings artwork, read from
--- the installed addon by file path (never bundled); other versions get the
--- page's flat colours, since the texture layout may differ.
-function WUI.HasVerifiedArt()
-    local version = RXPW.GetVersion(WUI_ADDON)
-    return RXPW.IsLoaded(WUI_ADDON) and type(version) == "string" and version:find(VERIFIED_ICON_VERSION) ~= nil
+-- The common settings atlas widened in 1.7.4. Use the installed artwork only
+-- for versions whose texture layout is known.
+local SETTINGS_ATLAS_WIDTHS = {
+    ["1.7.0"] = 512, ["1.7.1"] = 512, ["1.7.2"] = 512, ["1.7.3"] = 512,
+    ["1.7.4"] = 1024, ["1.7.5"] = 1024,
+}
+
+function WUI.GetSettingsAtlasWidth()
+    if RXPW.IsLoaded(WUI_ADDON) then
+        return SETTINGS_ATLAS_WIDTHS[RXPW.GetVersion(WUI_ADDON)]
+    end
 end
 
 function WUI.GetQuestIcon(status, iconType)

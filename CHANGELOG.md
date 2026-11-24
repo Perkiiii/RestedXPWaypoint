@@ -10,6 +10,13 @@ historical release notes have not been reconstructed here.
 Record future changes here under Added, Changed, Fixed or Known Issues. Move them
 to a versioned section when preparing that version.
 
+## [0.6.4] - Publication pending
+
+### Fixed
+
+- Restored the appearance of settings checkboxes, dropdowns, and other controls
+  when Waypoint UI 1.7.4 or 1.7.5 is installed.
+
 ## [0.6.3] - 2026-10-17
 
 ### Changed
